@@ -15,7 +15,8 @@ CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", 0))
 STATE_FILE = "bot_state.json"
 
 # --- НАСТРОЙКИ СИСТЕМЫ ---
-SYMBOL = "XBTUSD"
+SYMBOL = "BTC/USD"
+KRAKEN_SYMBOL = "XXBTZUSD"
 TIMEFRAME = 15
 EMA_PERIOD = 50
 TRADE_STAGE_LIMIT = 100
@@ -66,27 +67,40 @@ stats = load_state()
 # --- TELEGRAM ---
 async def send_telegram_async(text):
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='Markdown')
+        await bot.send_message(chat_id=CHAT_ID, text=text)
     except Exception as e:
         logging.error(f"Telegram error: {e}")
 
 def send_telegram(text):
-    asyncio.run(send_telegram_async(text))
+    loop = asyncio.get_event_loop()
+    if   loop.is_running():
+          loop.create_task(send_telegram_async(text))
+    else:
+       asyncio.run(send_telegram_async(text))
 
 # --- KRAKEN API ---
 def get_ohlc():
-    resp = requests.get(f"https://api.kraken.com/0/public/OHLC?pair={SYMBOL}&interval={TIMEFRAME}")
-    ohlc = resp.json()["result"][SYMBOL]
-    prices = [float(x[4]) for x in ohlc] # close
-    volumes = [float(x[6]) for x in ohlc]
-    return prices, volumes
+    try:
+        resp = requests.get(f"https://api.kraken.com/0/public/OHLC?pair={SYMBOL}")
+        data = resp.json()["result"]
+        pair_key = list(data.keys())[0] # автоматом возьмет XXBTZUSD
+        ohlc = data[pair_key]
+        prices = [float(x[4]) for x in ohlc]
 
+    except Exception as e:
+        logging.error(f"{func_name} error: {e}")
+        return None
 def get_ticker():
-    t = requests.get(f"https://api.kraken.com/0/public/Ticker?pair={SYMBOL}")
-    d = t.json()["result"][SYMBOL]
-    bid, ask = float(d["b"][0]), float(d["a"][0])
-    return {"bid": bid, "ask": ask}
+    try:
+        resp = requests.get(f"https://api.kraken.com/0/public/Ticker?pair={SYMBOL}")
+        data = resp.json()["result"]
+        pair_key = list(data.keys())[0]
+        ticker = data[pair_key]
+        return float(ticker['c'][0])
 
+    except Exception as e:
+        logging.error(f"{func_name} error: {e}")
+        return None
 # --- ИНДИКАТОРЫ ---
 def calculate_ema(p, n):
     ema = [sum(p[:n]) / n]
@@ -96,34 +110,32 @@ def calculate_ema(p, n):
     return ema
 
 def get_atr():
-    prices, _ = get_ohlc()
-    if len(prices) < 15: return 0
+    data = get_ohlc()
+    if not prices or len(prices) < 15: return 0
     tr_list = []
     for i in range(1, 15):
         h = prices[i]
-        l = prices[i]
+        l = prices[i] 
         c_prev = prices[i-1]
         tr = max(h - l, abs(h - c_prev), abs(l - c_prev))
         tr_list.append(tr)
     return sum(tr_list) / len(tr_list)
-
 def get_trend():
-    prices, _ = get_ohlc()
-    if len(prices) < 50: return "range"
+    prices = get_ohlc()
+    if not prices or len(prices) < 50: return "range"
     ema20 = sum(prices[-20:])/20
     ema50 = sum(prices[-50:])/50
     if ema20 < ema50 * 0.997: return "down"
     if ema20 > ema50 * 1.003: return "up"
     return "range"
-
 def get_bb():
-    prices, volumes = get_ohlc()
-    if len(prices) < 20: return None, None, None, None
+    prices = get_ohlc()
+    if not prices: return 0, 0, 0, 0
     ma20 = sum(prices[-20:]) / 20
     std = (sum([(x - ma20) ** 2 for x in prices[-20:]]) / 20) ** 0.5
     upper = ma20 + 2 * std
     lower = ma20 - 2 * std
-    return upper, ma20, lower, volumes[-1]
+    return upper, lower, ma20, std
 
 # --- TELEGRAM COMMANDS ---
 async def handle_command(update, context):
@@ -134,8 +146,8 @@ async def handle_command(update, context):
         wr = (stats["total_wins"]/stats["total_trades"]*100) if stats["total_trades"] else 0
         regime = get_trend()
         daily_r = 0 # TODO: добавить расчет
-        msg = f"*📊 Stats {SYMBOL} v7.2.0*\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`\nPnL: `${stats['total_pnl']:.2f}`\nRegime: `{regime}` | DailyR: `{daily_r:.2f}`"
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        msg = f"📊 Stats {SYMBOL} v7.2.0\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`\nPnL: `${stats['total_pnl']:.2f}`\nRegime: `{regime}` | DailyR: `{daily_r:.2f}`"
+        await update.message.reply_text(msg)
     
     elif text == "/pos":
         pos = stats.get("open_position")
@@ -143,8 +155,8 @@ async def handle_command(update, context):
             await update.message.reply_text("Нет открытой позиции")
             return
         side = "BUY" if pos["side"] == "buy" else "SELL"
-        msg = f"*📍 Position*\nSide: `{side}` @ `${pos['entry']:.2f}`\nVolume: `{pos['volume']:.4f}`\nSL: `${pos['sl']:.2f}` | TP: `${pos['tp']:.2f}`"
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        msg = f"📍 Position\nSide: `{side}` @ `${pos['entry']:.2f}`\nVolume: `{pos['volume']:.4f}`\nSL: `${pos['sl']:.2f}` | TP: `${pos['tp']:.2f}`"
+        await update.message.reply_text(msg)
     
     elif text == "/close":
         pos = stats.get("open_position")
@@ -160,8 +172,8 @@ async def handle_command(update, context):
         stats["total_pnl"] += pnl
         stats["open_position"] = None
         save_state(stats)
-        msg = f"🔴 *MANUAL CLOSE*\nPrice: `${price:.2f}`\nPnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}`"
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        msg = f"🔴 *MANUAL CLOSE*\nPrice: {price:.2f}\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}`"
+        await update.message.reply_text(msg)
 
 # --- ОСНОВНОЙ ЦИКЛ ---
 def run_bot():
@@ -174,7 +186,7 @@ def run_bot():
     async def trading_loop():
         await app.initialize()
         await app.start()
-        send_telegram(f"🚀 *Bot started 7.2.0-filters | Pair: {SYMBOL}*")
+        send_telegram(f"🚀 Bot started 7.2.0-filters | Pair: {SYMBOL}")
         
         while True:
             try:
@@ -214,7 +226,7 @@ def run_bot():
                         stats["last_stop_time"] = time.time()
                         save_state(stats)
                         wr = (stats["total_wins"]/stats["total_trades"]*100)
-                        msg = f"🔴 *SL CLOSE*\nSide: `LONG`\nPrice: `${pos['sl']:.2f}`\nPnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
+                        msg = f"🔴 *SL CLOSE*\nSide: `LONG`\nPrice: `${pos['sl']:.2f}`\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                         send_telegram(msg)
                         logging.info(f"[CLOSE] SL {msg}")
                         continue
@@ -229,7 +241,7 @@ def run_bot():
                         stats["open_position"] = None
                         save_state(stats)
                         wr = (stats["total_wins"]/stats["total_trades"]*100)
-                        msg = f"🟢 *TP CLOSE*\nSide: `LONG`\nPrice: `${pos['tp']:.2f}`\nPnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
+                        msg = f"🟢 *TP CLOSE*\nSide: `LONG`\nPrice: `${pos['tp']:.2f}`\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                         send_telegram(msg)
                         logging.info(f"[CLOSE] TP {msg}")
                         continue
@@ -245,7 +257,7 @@ def run_bot():
                         stats["last_stop_time"] = time.time()
                         save_state(stats)
                         wr = (stats["total_wins"]/stats["total_trades"]*100)
-                        msg = f"🔴 *SL CLOSE*\nSide: `SHORT`\nPrice: `${pos['sl']:.2f}`\nPnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
+                        msg = f"🔴 *SL CLOSE*\nSide: `SHORT`\nPrice: `${pos['sl']:.2f}`\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                         send_telegram(msg)
                         logging.info(f"[CLOSE] SL {msg}")
                         continue
@@ -260,7 +272,7 @@ def run_bot():
                         stats["open_position"] = None
                         save_state(stats)
                         wr = (stats["total_wins"]/stats["total_trades"]*100)
-                        msg = f"🟢 *TP CLOSE*\nSide: `SHORT`\nPrice: `${pos['tp']:.2f}`\nPnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
+                        msg = f"🟢 *TP CLOSE*\nSide: `SHORT`\nPrice: `${pos['tp']:.2f}`\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                         send_telegram(msg)
                         logging.info(f"[CLOSE] TP {msg}")
                         continue
@@ -313,7 +325,7 @@ def run_bot():
                     }
                     stats["daily_trades"] = stats.get("daily_trades", 0) + 1
                     save_state(stats)
-                    msg = f"🟢 *OPEN LONG*\nEntry: `${price:.2f}`\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
+                    msg = f"🟢 *OPEN LONG*\nEntry: {price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
                     send_telegram(msg)
                     logging.info(f"[OPEN] {msg}")
                 
@@ -338,7 +350,7 @@ def run_bot():
                     }
                     stats["daily_trades"] = stats.get("daily_trades", 0) + 1
                     save_state(stats)
-                    msg = f"🔴 *OPEN SHORT*\nEntry: `${price:.2f}`\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
+                    msg = f"🔴 *OPEN SHORT*\nEntry: {price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
                     send_telegram(msg)
                     logging.info(f"[OPEN] {msg}")
                 
