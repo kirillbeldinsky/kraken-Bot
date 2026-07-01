@@ -203,23 +203,66 @@ async def handle_command(update, context):
     if text == "/stats":
         wr = (stats["total_wins"]/stats["total_trades"]*100) if stats["total_trades"] else 0
         regime = get_trend()
-        daily_r = 0 # TODO: добавить расчет
-        msg = f"📊 Stats {SYMBOL} v7.2.0\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`\nPnL: `${stats['total_pnl']:.2f}`\nRegime: `{regime}` | DailyR: `{daily_r:.2f}`"
-        await update.message.reply_text(msg)
+        daily_r = stats.get("daily_trades", 0)
+        roi = ((stats['paper_balance'] - PAPER_BALANCE_START) / PAPER_BALANCE_START * 100) if PAPER_BALANCE_START > 0 else 0
+        msg = f"""📊 *Stats {SYMBOL} v7.2.0*
+
+💰 *Balance:* `${stats['paper_balance']:.2f}`
+📈 *Total Trades:* `{stats['total_trades']}`
+🎯 *Win Rate:* `{wr:.1f}%`
+💵 *Total PnL:* `${stats['total_pnl']:.2f}`
+📊 *ROI:* `{roi:.2f}%`
+📈 *Market Regime:* `{regime}`
+🔄 *Today's Trades:* `{daily_r}/{MAX_TRADES_PER_DAY}`"""
+        await update.message.reply_text(msg, parse_mode='Markdown')
     
     elif text == "/pos":
         pos = stats.get("open_position")
         if not pos:
-            await update.message.reply_text("Нет открытой позиции")
+            await update.message.reply_text("❌ No open position")
             return
-        side = "BUY" if pos["side"] == "buy" else "SELL"
-        msg = f"📍 Position\nSide: `{side}` @ `${pos['entry']:.2f}`\nVolume: `{pos['volume']:.4f}`\nSL: `${pos['sl']:.2f}` | TP: `${pos['tp']:.2f}`"
-        await update.message.reply_text(msg)
+        
+        ticker = get_ticker()
+        current_price = ticker['bid'] if pos['side'] == 'buy' else ticker['ask']
+        
+        # Calculate current PnL
+        if pos['side'] == 'buy':
+            current_pnl = (current_price - pos['entry']) * pos['volume'] * (1 - FEE_PCT)
+            pnl_pct = ((current_price - pos['entry']) / pos['entry']) * 100
+        else:  # sell
+            current_pnl = (pos['entry'] - current_price) * pos['volume'] * (1 - FEE_PCT)
+            pnl_pct = ((pos['entry'] - current_price) / pos['entry']) * 100
+        
+        # Distance to SL/TP
+        if pos['side'] == 'buy':
+            dist_sl = ((pos['entry'] - pos['sl']) / pos['entry']) * 100
+            dist_tp = ((pos['tp'] - pos['entry']) / pos['entry']) * 100
+            side_emoji = "🟢"
+            side_text = "LONG"
+        else:
+            dist_sl = ((pos['sl'] - pos['entry']) / pos['entry']) * 100
+            dist_tp = ((pos['entry'] - pos['tp']) / pos['entry']) * 100
+            side_emoji = "🔴"
+            side_text = "SHORT"
+        
+        pnl_emoji = "📈" if current_pnl > 0 else "📉"
+        
+        msg = f"""{side_emoji} *Position {side_text}*
+
+💵 *Entry:* `${pos['entry']:.2f}`
+📍 *Current:* `${current_price:.2f}`
+📊 *Volume:* `{pos['volume']:.4f}`
+
+{pnl_emoji} *PnL:* `${current_pnl:.2f}` (`{pnl_pct:.2f}%`)
+
+🛑 *SL:* `${pos['sl']:.2f}` (`{dist_sl:.2f}%`)
+🎯 *TP:* `${pos['tp']:.2f}` (`{dist_tp:.2f}%`)"""
+        await update.message.reply_text(msg, parse_mode='Markdown')
     
     elif text == "/close":
         pos = stats.get("open_position")
         if not pos: 
-            await update.message.reply_text("Нет открытой позиции")
+            await update.message.reply_text("❌ No open position")
             return
         ticker = get_ticker()
         price = ticker['bid'] if pos['side'] == 'buy' else ticker['ask']
