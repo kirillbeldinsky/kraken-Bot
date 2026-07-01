@@ -5,6 +5,7 @@ import json
 import os
 from datetime import date
 from telegram import Bot
+from telegram.ext import Application, CommandHandler
 import asyncio
 
 # --- CONFIG ---
@@ -67,16 +68,19 @@ stats = load_state()
 # --- TELEGRAM ---
 async def send_telegram_async(text):
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=text)
+        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='Markdown')
     except Exception as e:
         logging.error(f"Telegram error: {e}")
 
 def send_telegram(text):
-    loop = asyncio.get_event_loop()
-    if   loop.is_running():
-          loop.create_task(send_telegram_async(text))
-    else:
-       asyncio.run(send_telegram_async(text))
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(send_telegram_async(text))
+        else:
+            asyncio.run(send_telegram_async(text))
+    except Exception as e:
+        logging.error(f"send_telegram error: {e}")
 
 # --- KRAKEN API ---
 def get_ohlc():
@@ -196,11 +200,11 @@ def get_bb():
     return upper, ma20, lower, avg_vol
     
 # --- TELEGRAM COMMANDS ---
-async def handle_command(update, context):
-    text = update.message.text
-    stats = load_state() # всегда читаем свежий стейт
-    
-    if text == "/stats":
+async def stats_command(update, context):
+    """Handle /stats command"""
+    try:
+        logging.info(f"[CMD] /stats received")
+        stats = load_state()
         wr = (stats["total_wins"]/stats["total_trades"]*100) if stats["total_trades"] else 0
         regime = get_trend()
         daily_r = stats.get("daily_trades", 0)
@@ -215,8 +219,19 @@ async def handle_command(update, context):
 📈 *Market Regime:* `{regime}`
 🔄 *Today's Trades:* `{daily_r}/{MAX_TRADES_PER_DAY}`"""
         await update.message.reply_text(msg, parse_mode='Markdown')
-    
-    elif text == "/pos":
+        logging.info(f"[CMD] /stats sent response")
+    except Exception as e:
+        logging.error(f"[ERROR] /stats: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+        except Exception as e2:
+            logging.error(f"[ERROR] Failed to send error message: {e2}")
+
+async def pos_command(update, context):
+    """Handle /pos command"""
+    try:
+        logging.info(f"[CMD] /pos received")
+        stats = load_state()
         pos = stats.get("open_position")
         if not pos:
             await update.message.reply_text("❌ No open position")
@@ -225,7 +240,7 @@ async def handle_command(update, context):
         ticker = get_ticker()
         if not ticker:
             await update.message.reply_text("❌ Error fetching price from Kraken API")
-            logging.error("get_ticker returned None in /pos command")
+            logging.error("[ERROR] get_ticker returned None in /pos")
             return
         
         current_price = ticker['bid'] if pos['side'] == 'buy' else ticker['ask']
@@ -234,7 +249,7 @@ async def handle_command(update, context):
         if pos['side'] == 'buy':
             current_pnl = (current_price - pos['entry']) * pos['volume'] * (1 - FEE_PCT)
             pnl_pct = ((current_price - pos['entry']) / pos['entry']) * 100
-        else:  # sell
+        else:
             current_pnl = (pos['entry'] - current_price) * pos['volume'] * (1 - FEE_PCT)
             pnl_pct = ((pos['entry'] - current_price) / pos['entry']) * 100
         
@@ -263,8 +278,19 @@ async def handle_command(update, context):
 🛑 *SL:* `${pos['sl']:.2f}` (`{dist_sl:.2f}%`)
 🎯 *TP:* `${pos['tp']:.2f}` (`{dist_tp:.2f}%`)"""
         await update.message.reply_text(msg, parse_mode='Markdown')
-    
-    elif text == "/close":
+        logging.info(f"[CMD] /pos sent response")
+    except Exception as e:
+        logging.error(f"[ERROR] /pos: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+        except Exception as e2:
+            logging.error(f"[ERROR] Failed to send error message: {e2}")
+
+async def close_command(update, context):
+    """Handle /close command"""
+    try:
+        logging.info(f"[CMD] /close received")
+        stats = load_state()
         pos = stats.get("open_position")
         if not pos: 
             await update.message.reply_text("❌ No open position")
@@ -281,20 +307,29 @@ async def handle_command(update, context):
         stats["total_pnl"] += pnl
         stats["open_position"] = None
         save_state(stats)
-        msg = f"🔴 *MANUAL CLOSE*\nPrice: {price:.2f}\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}`"
-        await update.message.reply_text(msg)
+        msg = f"🔴 *MANUAL CLOSE*\nPrice: ${price:.2f}\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}`"
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        logging.info(f"[CMD] /close sent response")
+    except Exception as e:
+        logging.error(f"[ERROR] /close: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+        except Exception as e2:
+            logging.error(f"[ERROR] Failed to send error message: {e2}")
 
 # --- ОСНОВНОЙ ЦИКЛ ---
 def run_bot():
-    from telegram.ext import Application, CommandHandler
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("stats", handle_command))
-    app.add_handler(CommandHandler("pos", handle_command))
-    app.add_handler(CommandHandler("close", handle_command))
+    
+    # Register command handlers
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("pos", pos_command))
+    app.add_handler(CommandHandler("close", close_command))
     
     async def trading_loop():
         await app.initialize()
         await app.start()
+        logging.info("Bot initialized and listening for commands")
         send_telegram(f"🚀 Bot started 7.2.0-filters | Pair: {SYMBOL}")
         
         while True:
@@ -323,6 +358,7 @@ def run_bot():
                     pos = stats["open_position"]
                     ticker = get_ticker()
                     if not ticker:
+                        logging.warning("Ticker is None, retrying...")
                         await asyncio.sleep(60)
                         continue
                     bid, ask = ticker["bid"], ticker["ask"]
@@ -338,9 +374,9 @@ def run_bot():
                         stats["last_stop_time"] = time.time()
                         save_state(stats)
                         wr = (stats["total_wins"]/stats["total_trades"]*100)
-                        msg = f"🔴 *SL CLOSE*\nSide: `LONG`\nPrice: `${pos['sl']:.2f}`\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
+                        msg = f"🔴 *SL CLOSE*\nSide: `LONG`\nPrice: `${pos['sl']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                         send_telegram(msg)
-                        logging.info(f"[CLOSE] SL {msg}")
+                        logging.info(f"[TRADE] SL closed LONG")
                         continue
                     
                     # Лонг TP
@@ -353,9 +389,9 @@ def run_bot():
                         stats["open_position"] = None
                         save_state(stats)
                         wr = (stats["total_wins"]/stats["total_trades"]*100)
-                        msg = f"🟢 *TP CLOSE*\nSide: `LONG`\nPrice: `${pos['tp']:.2f}`\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
+                        msg = f"🟢 *TP CLOSE*\nSide: `LONG`\nPrice: `${pos['tp']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                         send_telegram(msg)
-                        logging.info(f"[CLOSE] TP {msg}")
+                        logging.info(f"[TRADE] TP closed LONG")
                         continue
                     
                     # Шорт SL
@@ -369,9 +405,9 @@ def run_bot():
                         stats["last_stop_time"] = time.time()
                         save_state(stats)
                         wr = (stats["total_wins"]/stats["total_trades"]*100)
-                        msg = f"🔴 *SL CLOSE*\nSide: `SHORT`\nPrice: `${pos['sl']:.2f}`\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
+                        msg = f"🔴 *SL CLOSE*\nSide: `SHORT`\nPrice: `${pos['sl']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                         send_telegram(msg)
-                        logging.info(f"[CLOSE] SL {msg}")
+                        logging.info(f"[TRADE] SL closed SHORT")
                         continue
                     
                     # Шорт TP
@@ -384,9 +420,9 @@ def run_bot():
                         stats["open_position"] = None
                         save_state(stats)
                         wr = (stats["total_wins"]/stats["total_trades"]*100)
-                        msg = f"🟢 *TP CLOSE*\nSide: `SHORT`\nPrice: `${pos['tp']:.2f}`\nPnL: {pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
+                        msg = f"🟢 *TP CLOSE*\nSide: `SHORT`\nPrice: `${pos['tp']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                         send_telegram(msg)
-                        logging.info(f"[CLOSE] TP {msg}")
+                        logging.info(f"[TRADE] TP closed SHORT")
                         continue
                     
                     await asyncio.sleep(5)
@@ -400,6 +436,7 @@ def run_bot():
                 
                 ticker = get_ticker()
                 if not ticker:
+                    logging.warning("Ticker is None, retrying...")
                     await asyncio.sleep(60)
                     continue
                 price = ticker["bid"]
@@ -412,7 +449,7 @@ def run_bot():
                 # --- ФИЛЬТР: Волатильность ATR ---
                 atr = get_atr()
                 if atr / price < MIN_ATR_PCT:
-                    logging.info(f" Low volatility ATR={atr:.0f}")
+                    logging.info(f"Low volatility ATR={atr:.0f}")
                     await asyncio.sleep(60)
                     continue
                 
@@ -422,7 +459,7 @@ def run_bot():
                 # ЛОНГ
                 if price <= lower:
                     if TREND_FILTER and trend == "down":
-                        logging.info(f" SKIP Long в даунтренде")
+                        logging.info(f"SKIP Long - downtrend")
                         await asyncio.sleep(60)
                         continue
                     
@@ -440,14 +477,14 @@ def run_bot():
                     }
                     stats["daily_trades"] = stats.get("daily_trades", 0) + 1
                     save_state(stats)
-                    msg = f"🟢 *OPEN LONG*\nEntry: {price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
+                    msg = f"🟢 *OPEN LONG*\nEntry: ${price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
                     send_telegram(msg)
-                    logging.info(f"[OPEN] {msg}")
+                    logging.info(f"[TRADE] OPEN LONG at {price:.2f}")
                 
                 # ШОРТ
                 elif price >= upper:
                     if TREND_FILTER and trend == "up":
-                        logging.info(f" SKIP Short в аптренде")
+                        logging.info(f"SKIP Short - uptrend")
                         await asyncio.sleep(60)
                         continue
                     
@@ -465,14 +502,14 @@ def run_bot():
                     }
                     stats["daily_trades"] = stats.get("daily_trades", 0) + 1
                     save_state(stats)
-                    msg = f"🔴 *OPEN SHORT*\nEntry: {price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
+                    msg = f"🔴 *OPEN SHORT*\nEntry: ${price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
                     send_telegram(msg)
-                    logging.info(f"[OPEN] {msg}")
+                    logging.info(f"[TRADE] OPEN SHORT at {price:.2f}")
                 
                 await asyncio.sleep(60)
                 
             except Exception as e:
-                logging.error(f"Loop error: {e}")
+                logging.error(f"[ERROR] Loop: {e}", exc_info=True)
                 await asyncio.sleep(60)
     
     asyncio.run(trading_loop())
