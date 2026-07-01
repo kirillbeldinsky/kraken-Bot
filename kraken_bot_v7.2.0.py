@@ -80,27 +80,57 @@ def send_telegram(text):
 
 # --- KRAKEN API ---
 def get_ohlc():
+    """
+    Returns a dict with lists: {'closes', 'highs', 'lows', 'volumes'} or None on error.
+    Uses KRAKEN_SYMBOL and TIMEFRAME.
+    """
     try:
-        resp = requests.get(f"https://api.kraken.com/0/public/OHLC?pair={SYMBOL}")
-        data = resp.json()["result"]
-        pair_key = list(data.keys())[0] # автоматом возьмет XXBTZUSD
-        ohlc = data[pair_key]
-        prices = [float(x[4]) for x in ohlc]
-
+        resp = requests.get(
+            f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}",
+            timeout=10
+        )
+        resp.raise_for_status()
+        result = resp.json().get("result", {})
+        # result may contain a 'last' key; pick the first key that isn't 'last'
+        pair_key = next((k for k in result.keys() if k != "last"), None)
+        if not pair_key:
+            logging.error("get_ohlc: no pair data in response")
+            return None
+        ohlc = result[pair_key]
+        closes = [float(x[4]) for x in ohlc]
+        highs = [float(x[2]) for x in ohlc]
+        lows = [float(x[3]) for x in ohlc]
+        volumes = [float(x[6]) for x in ohlc]
+        return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes}
     except Exception as e:
-        logging.error(f"{func_name} error: {e}")
+        logging.exception(f"get_ohlc error: {e}")
         return None
+
 def get_ticker():
+    """
+    Returns dict: {'bid': float, 'ask': float, 'last': float} or None on error.
+    """
     try:
-        resp = requests.get(f"https://api.kraken.com/0/public/Ticker?pair={SYMBOL}")
-        data = resp.json()["result"]
-        pair_key = list(data.keys())[0]
-        ticker = data[pair_key]
-        return float(ticker['c'][0])
-
+        resp = requests.get(
+            f"https://api.kraken.com/0/public/Ticker?pair={KRAKEN_SYMBOL}",
+            timeout=10
+        )
+        resp.raise_for_status()
+        result = resp.json().get("result", {})
+        pair_key = next((k for k in result.keys()), None)
+        if not pair_key:
+            logging.error("get_ticker: no pair data in response")
+            return None
+        ticker = result[pair_key]
+        return {
+            "bid": float(ticker["b"][0]),
+            "ask": float(ticker["a"][0]),
+            "last": float(ticker["c"][0])
+        }
     except Exception as e:
-        logging.error(f"{func_name} error: {e}")
+        logging.exception(f"get_ticker error: {e}")
         return None
+
 # --- ИНДИКАТОРЫ ---
 def calculate_ema(p, n):
     ema = [sum(p[:n]) / n]
@@ -109,34 +139,62 @@ def calculate_ema(p, n):
         ema.append(price * k + ema[-1] * (1 - k))
     return ema
 
-def get_atr():
+def get_atr(periods=14):
+    """
+    Returns ATR computed over the last `periods` bars (float) or 0 on error/insufficient data.
+    """
     data = get_ohlc()
-    if not prices or len(prices) < 15: return 0
+    if not data:
+        return 0
+    highs = data["highs"]
+    lows = data["lows"]
+    closes = data["closes"]
+    if len(closes) < periods + 1:
+        return 0
     tr_list = []
-    for i in range(1, 15):
-        h = prices[i]
-        l = prices[i] 
-        c_prev = prices[i-1]
-        tr = max(h - l, abs(h - c_prev), abs(l - c_prev))
+    # compute TR for the last `periods` bars
+    for i in range(-periods, 0):
+        high = highs[i]
+        low = lows[i]
+        prev_close = closes[i - 1]
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
         tr_list.append(tr)
     return sum(tr_list) / len(tr_list)
+
 def get_trend():
-    prices = get_ohlc()
-    if not prices or len(prices) < 50: return "range"
-    ema20 = sum(prices[-20:])/20
-    ema50 = sum(prices[-50:])/50
-    if ema20 < ema50 * 0.997: return "down"
-    if ema20 > ema50 * 1.003: return "up"
+    data = get_ohlc()
+    if not data:
+        return "range"
+    closes = data["closes"]
+    if len(closes) < 50:
+        return "range"
+    ema20 = sum(closes[-20:]) / 20
+    ema50 = sum(closes[-50:]) / 50
+    if ema20 < ema50 * 0.997:
+        return "down"
+    if ema20 > ema50 * 1.003:
+        return "up"
     return "range"
+
 def get_bb():
-    prices = get_ohlc()
-    if not prices: return 0, 0, 0, 0
-    ma20 = sum(prices[-20:]) / 20
-    std = (sum([(x - ma20) ** 2 for x in prices[-20:]]) / 20) ** 0.5
+    """
+    Returns (upper, ma20, lower, avg_volume)
+    Matches usage: upper, ma, lower, volume = get_bb()
+    """
+    data = get_ohlc()
+    if not data:
+        return 0, 0, 0, 0
+    closes = data["closes"]
+    volumes = data["volumes"]
+    if len(closes) < 20:
+        return 0, 0, 0, 0
+    ma20 = sum(closes[-20:]) / 20
+    std = (sum((x - ma20) ** 2 for x in closes[-20:]) / 20) ** 0.5
     upper = ma20 + 2 * std
     lower = ma20 - 2 * std
-    return upper, lower, ma20, std
-
+    avg_vol = sum(volumes[-20:]) / len(volumes[-20:])
+    return upper, ma20, lower, avg_vol
+    
 # --- TELEGRAM COMMANDS ---
 async def handle_command(update, context):
     text = update.message.text
