@@ -223,6 +223,11 @@ async def handle_command(update, context):
             return
         
         ticker = get_ticker()
+        if not ticker:
+            await update.message.reply_text("❌ Error fetching price from Kraken API")
+            logging.error("get_ticker returned None in /pos command")
+            return
+        
         current_price = ticker['bid'] if pos['side'] == 'buy' else ticker['ask']
         
         # Calculate current PnL
@@ -265,6 +270,9 @@ async def handle_command(update, context):
             await update.message.reply_text("❌ No open position")
             return
         ticker = get_ticker()
+        if not ticker:
+            await update.message.reply_text("❌ Error fetching price from Kraken API")
+            return
         price = ticker['bid'] if pos['side'] == 'buy' else ticker['ask']
         pnl = (price - pos['entry']) * pos['volume'] * (1 - FEE_PCT) if pos['side'] == 'buy' else (pos['entry'] - price) * pos['volume'] * (1 - FEE_PCT)
         stats["paper_balance"] += pnl
@@ -314,6 +322,9 @@ def run_bot():
                 if stats.get("open_position"):
                     pos = stats["open_position"]
                     ticker = get_ticker()
+                    if not ticker:
+                        await asyncio.sleep(60)
+                        continue
                     bid, ask = ticker["bid"], ticker["ask"]
                     
                     # Лонг SL
@@ -388,6 +399,9 @@ def run_bot():
                     continue
                 
                 ticker = get_ticker()
+                if not ticker:
+                    await asyncio.sleep(60)
+                    continue
                 price = ticker["bid"]
                 
                 # --- ФИЛЬТР: Объём ---
