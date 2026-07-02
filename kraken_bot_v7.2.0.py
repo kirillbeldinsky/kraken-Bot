@@ -38,6 +38,9 @@ MAX_TRADES_PER_DAY = 3 # лимит сделок
 FEE_PCT = 0.0026
 bot = Bot(token=TELEGRAM_TOKEN)
 
+# Global flag for shutdown
+shutdown_event = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
@@ -317,14 +320,39 @@ async def close_command(update, context):
         except Exception as e2:
             logging.error(f"[ERROR] Failed to send error message: {e2}")
 
+async def shutdown_command(update, context):
+    """Handle /shutd command to shutdown the bot"""
+    try:
+        logging.info(f"[CMD] /shutd received - initiating shutdown")
+        msg = "🛑 *Bot Shutdown Initiated*\nThe bot will stop in a few seconds..."
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        logging.info(f"[CMD] /shutd sent shutdown notification")
+        
+        # Signal shutdown to the main loop
+        global shutdown_event
+        if shutdown_event:
+            shutdown_event.set()
+            logging.info("[CMD] Shutdown event set")
+        
+    except Exception as e:
+        logging.error(f"[ERROR] /shutd: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+        except Exception as e2:
+            logging.error(f"[ERROR] Failed to send error message: {e2}")
+
 # --- ОСНОВНОЙ ЦИКЛ ---
 def run_bot():
+    global shutdown_event
+    shutdown_event = asyncio.Event()
+    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Register command handlers
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("pos", pos_command))
     app.add_handler(CommandHandler("close", close_command))
+    app.add_handler(CommandHandler("shutd", shutdown_command))
     
     async def trading_loop():
         async with app:
@@ -336,7 +364,7 @@ def run_bot():
             send_telegram(f"🚀 Bot started 7.2.0-filters | Pair: {SYMBOL}")
             
             try:
-                while True:
+                while not shutdown_event.is_set():
                     try:
                         stats = load_state()
                         
