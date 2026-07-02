@@ -4,7 +4,7 @@ import logging
 import json
 import os
 from datetime import date
-from telegram import Bot
+from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler
 import asyncio
 
@@ -327,15 +327,13 @@ def run_bot():
     app.add_handler(CommandHandler("close", close_command))
     
     async def trading_loop():
-        await app.initialize()
-        await app.start()
-        logging.info("Bot initialized and listening for commands")
-        send_telegram(f"🚀 Bot started 7.2.0-filters | Pair: {SYMBOL}")
-        
-        # IMPORTANT: Start polling to receive updates from Telegram
         async with app:
-            await app.updater.start_polling(allowed_updates=update.Update.ALL_TYPES)
-            logging.info("Bot updater polling started")
+            await app.initialize()
+            await app.start()
+            logging.info("Bot initialized and starting polling...")
+            await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+            logging.info("Bot updater polling started ✓")
+            send_telegram(f"🚀 Bot started 7.2.0-filters | Pair: {SYMBOL}")
             
             try:
                 while True:
@@ -517,9 +515,12 @@ def run_bot():
                     except Exception as e:
                         logging.error(f"[ERROR] Loop: {e}", exc_info=True)
                         await asyncio.sleep(60)
+            except KeyboardInterrupt:
+                logging.info("Bot received stop signal...")
             finally:
                 await app.updater.stop_polling()
                 await app.stop()
+                logging.info("Bot stopped cleanly ✓")
     
     asyncio.run(trading_loop())
 
