@@ -473,17 +473,18 @@ def run_bot():
                             continue
                         price = ticker["bid"]
                         
-                        # --- ФИЛЬТР: Объём ---
-                        if volume < MIN_VOLUME_FILTER:
-                            await asyncio.sleep(60)
+                        # --- ФИЛЬТР: ATR (анти-флэт) ---
+                        atr_pct = get_atr_pct()
+                        if atr_pct < MIN_ATR_PCT:
+                            logging.info("SKIP - ATR too low (flat market)")
                             continue
-                        
-                        # --- ФИЛЬТР: Волатильность ATR ---
-                        atr = get_atr()
-                        if atr / price < MIN_ATR_PCT:
-                            logging.info(f"Low volatility ATR={atr:.0f}")
-                            await asyncio.sleep(60)
+
+                        # --- ФИЛЬТР: ОТНОСИТЕЛЬНЫЙ ОБЪЕМ ---
+                        vol_ma = ta.sma(volume, 20)
+                        if volume < vol_ma * 0.7:
+                            logging.info("SKIP - low relative volume")
                             continue
+
                         
                         # --- ФИЛЬТР: Тренд ---
                         trend = get_trend()
