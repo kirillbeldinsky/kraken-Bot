@@ -30,7 +30,7 @@ TAKE_PROFIT_PCT = 0.025 # 2.5% тейк, RR 1:1.67
 
 # --- ФИЛЬТРЫ v7.2.0 ---
 MIN_VOLUME_FILTER = 8 # было 15, резало шорты на BTC
-MIN_ATR_PCT = 0.0015 # не торгуем флэт < 0.015%
+MIN_ATR_PCT = 0.003 # не торгуем флэт < 0.03%
 TREND_FILTER = True # вкл фильтр EMA
 COOLDOWN_HOURS = 4 # пауза после стопа
 MAX_TRADES_PER_DAY = 3 # лимит сделок
