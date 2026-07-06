@@ -487,8 +487,15 @@ def run_bot():
                         
                         # --- ФИЛЬТР: Тренд ---
                         trend = get_trend()
-                        
-                        # ЛОНГ
+
+                        # --- ПЕРВЫЙ ФИЛЬТР: BTC должен быть выше 64k ---
+                        BTC_THRESHOLD = 64000
+                        if current_price <= BTC_THRESHOLD:
+                            logging.info(f"[LONG BLOCKED] BTC price {current_price} ≤ {BTC_THRESHOLD}")
+                            send_telegram(f"🚫 Long blocked: BTC={current_price} is below 64k")
+                            await asyncio.sleep(60)
+                            continue   # ← полностью пропускаем лонг-логику
+
                         if price <= lower:
                             if TREND_FILTER and trend == "down":
                                 logging.info(f"SKIP Long - downtrend")
