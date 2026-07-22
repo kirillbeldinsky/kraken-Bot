@@ -175,13 +175,17 @@ def get_trend():
     closes = data["closes"]
     if len(closes) < 50:
         return "range"
+
     ema20 = sum(closes[-20:]) / 20
     ema50 = sum(closes[-50:]) / 50
-    if ema20 < ema50 * 0.997:
+
+    # Мягкий порог ±0.15%
+    if ema20 < ema50 * 0.9985:
         return "down"
-    if ema20 > ema50 * 1.003:
+    if ema20 > ema50 * 1.0015:
         return "up"
     return "range"
+
 
 def get_bb():
     """
