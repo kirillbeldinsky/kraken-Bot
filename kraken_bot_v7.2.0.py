@@ -7,6 +7,7 @@ from datetime import date
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler
 import asyncio
+import pandas_ta as ta
 
 # --- CONFIG ---
 from dotenv import load_dotenv
@@ -30,7 +31,7 @@ TAKE_PROFIT_PCT = 0.025 # 2.5% тейк, RR 1:1.67
 
 # --- ФИЛЬТРЫ v7.2.0 ---
 MIN_VOLUME_FILTER = 8 # было 15, резало шорты на BTC
-MIN_ATR_PCT = 0.0007 # не торгуем флэт < 0.03%
+MIN_ATR_PCT = 0.0007 # не торгуем флэт < 0.007%
 TREND_FILTER = True # вкл фильтр EMA
 COOLDOWN_HOURS = 4 # пауза после стопа
 MAX_TRADES_PER_DAY = 3 # лимит сделок
@@ -486,7 +487,7 @@ def run_bot():
 
 
                         # --- ФИЛЬТР: ОТНОСИТЕЛЬНЫЙ ОБЪЕМ ---
-                        vol_ma = ta.sma(volume, 20)
+                        vol_ma = ta.sma(pd.Series(volume), length=20).iloc[-1]
                         if volume < vol_ma * 0.7:
                             logging.info("SKIP - low relative volume")
                             continue
