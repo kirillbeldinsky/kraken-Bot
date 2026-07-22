@@ -494,8 +494,8 @@ def run_bot():
                         volumes = ohlc["volumes"]
                         vol_ma = sum(volumes[-20:]) / 20
                         
-                        if volume < vol_ma * 0.5:
-                            logging.info("SKIP - low relative volume")
+                        if volume < vol_ma * 0.55:
+                            logging.info(f"SKIP - low relative volume ({volume:.2f} < {vol_ma*0.55:.2f})")
                             continue
 
 
