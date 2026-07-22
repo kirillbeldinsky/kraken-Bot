@@ -474,10 +474,16 @@ def run_bot():
                         price = ticker["bid"]
                         
                         # --- ФИЛЬТР: ATR (анти-флэт) ---
-                        atr_pct = get_atr_pct()
+                        atr = get_atr()
+                        if atr == 0:
+                            logging.info("SKIP - ATR unavailable")
+                            continue
+
+                        atr_pct = atr / price
                         if atr_pct < MIN_ATR_PCT:
                             logging.info("SKIP - ATR too low (flat market)")
                             continue
+
 
                         # --- ФИЛЬТР: ОТНОСИТЕЛЬНЫЙ ОБЪЕМ ---
                         vol_ma = ta.sma(volume, 20)
