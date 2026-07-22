@@ -7,7 +7,6 @@ from datetime import date
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler
 import asyncio
-import pandas_ta as ta
 
 # --- CONFIG ---
 from dotenv import load_dotenv
