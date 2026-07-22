@@ -486,7 +486,7 @@ def run_bot():
 
 
                         # --- ФИЛЬТР: ОТНОСИТЕЛЬНЫЙ ОБЪЕМ ---
-                        vol_ma = ta.sma(pd.Series(volume), length=20).iloc[-1]
+                        vol_ma = sum(volume[-20:]) / 20
                         if volume < vol_ma * 0.7:
                             logging.info("SKIP - low relative volume")
                             continue
