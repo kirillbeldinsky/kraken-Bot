@@ -486,10 +486,18 @@ def run_bot():
 
 
                         # --- ФИЛЬТР: ОТНОСИТЕЛЬНЫЙ ОБЪЕМ ---
-                        vol_ma = sum(volume[-20:]) / 20
+                        ohlc = get_ohlc()
+                        if not ohlc or len(ohlc["volumes"]) < 20:
+                            logging.info("SKIP - not enough volume data")
+                            continue
+                        
+                        volumes = ohlc["volumes"]
+                        vol_ma = sum(volumes[-20:]) / 20
+                        
                         if volume < vol_ma * 0.7:
                             logging.info("SKIP - low relative volume")
                             continue
+
 
                         
                         # --- ФИЛЬТР: Тренд ---
