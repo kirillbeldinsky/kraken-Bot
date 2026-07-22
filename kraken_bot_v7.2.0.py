@@ -30,7 +30,7 @@ TAKE_PROFIT_PCT = 0.025 # 2.5% тейк, RR 1:1.67
 
 # --- ФИЛЬТРЫ v7.2.0 ---
 MIN_VOLUME_FILTER = 8 # было 15, резало шорты на BTC
-MIN_ATR_PCT = 0.0007 # не торгуем флэт < 0.007%
+MIN_ATR_PCT = 0.0004 # не торгуем флэт < 0.007%
 TREND_FILTER = True # вкл фильтр EMA
 COOLDOWN_HOURS = 4 # пауза после стопа
 MAX_TRADES_PER_DAY = 3 # лимит сделок
@@ -494,7 +494,7 @@ def run_bot():
                         volumes = ohlc["volumes"]
                         vol_ma = sum(volumes[-20:]) / 20
                         
-                        if volume < vol_ma * 0.7:
+                        if volume < vol_ma * 0.5:
                             logging.info("SKIP - low relative volume")
                             continue
 
