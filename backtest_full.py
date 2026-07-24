@@ -84,7 +84,7 @@ def get_signal(candle, state):
     price = candle["close"]
     volume = candle["volume"]
 
-    # ATR фильтр
+    # --- ATR (анти-флэт) ---
     atr = get_atr_from_state(state)
     if atr == 0:
         return None
@@ -93,7 +93,7 @@ def get_signal(candle, state):
     if atr_pct < 0.00045:
         return None
 
-    # Relative volume
+    # --- Relative Volume ---
     ohlc = get_ohlc_from_state(state)
     if len(ohlc["volumes"]) < 20:
         return None
@@ -102,21 +102,21 @@ def get_signal(candle, state):
     if volume < vol_ma * 0.55:
         return None
 
-    # Trend
+    # --- Trend ---
     trend = get_trend_from_state(state)
 
-    # Bollinger Bands
+    # --- Bollinger Bands ---
     upper, ma, lower = get_bb_from_state(state)
     if upper is None or lower is None:
         return None
 
-    # LONG
+    # --- LONG ENTRY ---
     if price <= lower:
         if TREND_FILTER and trend == "down":
             return None
         return "long"
 
-    # SHORT
+    # --- SHORT ENTRY ---
     if price >= upper:
         if TREND_FILTER and trend == "up":
             return None
