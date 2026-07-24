@@ -1,0 +1,23 @@
+import krakenex
+from pykrakenapi import KrakenAPI
+import pandas as pd
+import json
+
+# Инициализация API
+api = krakenex.API()
+k = KrakenAPI(api)
+
+# Получение данных с интервалом в 15 минут
+pair = 'XXBTZUSD'  # Например, пара BTC/USD
+ohlc, last = k.get_ohlc_data(pair, interval=15)
+
+# Преобразование данных в JSON
+data = {
+    "pair": pair,
+    "interval": 15,
+    "ohlc": ohlc.to_dict(orient='records')
+}
+json_data = json.dumps(data, indent=4)
+
+# Вывод результата
+print(json_data)
