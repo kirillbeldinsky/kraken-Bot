@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+import csv
 
 class KrakenOHLC:
     BASE_URL = "https://api.kraken.com/0/public/OHLC"
