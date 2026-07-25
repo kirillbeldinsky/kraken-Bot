@@ -51,7 +51,7 @@ class KrakenOHLC:
        # module_dir = os.path.dirname(os.path.abspath(__file__))
        # save_path = os.path.join(module_dir, "kraken_ohlc_data.csv")
         with open("data.csv", "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow(data)
+            csv.writer(f).writerow(data)
 
         #df.to_csv(save_path)
 
