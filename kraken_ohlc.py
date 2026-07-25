@@ -46,7 +46,7 @@ class KrakenOHLC:
         df = df.asfreq(f"{interval}min")
         
         #  Сохранение CSV в той же папке, где лежит модуль 
-        df.to_csv("kraken_ohlc_data.csv" index=False)
+        df.to_csv("kraken_ohlc_data.csv", index=False)
        # module_dir = os.path.dirname(os.path.abspath(__file__))
        # save_path = os.path.join(module_dir, "kraken_ohlc_data.csv")
 
