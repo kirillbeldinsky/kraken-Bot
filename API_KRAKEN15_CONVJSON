@@ -1,6 +1,6 @@
 import krakenex
 from pykrakenapi import KrakenAPI
-import csv as pd
+import pandas as pd
 import json
 
 # Инициализация API
