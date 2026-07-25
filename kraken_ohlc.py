@@ -45,6 +45,6 @@ class KrakenOHLC:
         # Assign correct frequency
         df = df.asfreq(f"{interval}min")
         # Экспорт DataFrame в CSV
-        ohlc.to_csv('/home/agent/kraken-Bot/kraken_ohlc_data.csv')
+        df.to_csv('/home/agent/kraken-Bot/kraken_ohlc_data.csv')
 
         return df
