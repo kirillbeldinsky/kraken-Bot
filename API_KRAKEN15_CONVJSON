@@ -10,6 +10,9 @@ k = KrakenAPI(api)
 # Получение данных с интервалом в 15 минут
 pair = 'XXBTZUSD'  # Например, пара BTC/USD
 ohlc, last = k.get_ohlc_data(pair, interval=15, since 2026-01-01)
+ohlc.index = pd.to_datetime(ohlc.index)
+ohlc = ohlc.asfreq("15min")
+
 
 # Преобразование данных в JSON
 data = {
