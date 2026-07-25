@@ -44,7 +44,12 @@ class KrakenOHLC:
 
         # Assign correct frequency
         df = df.asfreq(f"{interval}min")
-        # Экспорт DataFrame в CSV
-        df.to_csv('/home/agent/kraken-Bot/kraken_ohlc_data.csv')
+        
+        #  Сохранение CSV в той же папке, где лежит модуль 
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        save_path = os.path.join(module_dir, "kraken_ohlc_data.csv")
+
+        df.to_csv(save_path)
 
         return df
+
