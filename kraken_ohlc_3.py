@@ -49,7 +49,7 @@ class KrakenOHLC:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"\n[{now}] Данные успешно получены для {self.pair}:")
         print("-" * 50)
-        print(df.tail(1))  # Выводит самую последнюю свечу
+        print(df.tail(2))  # Выводит самую последнюю свечу
         print("-" * 50)
 
         return df
