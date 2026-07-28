@@ -466,6 +466,7 @@ def run_bot():
 
     # ... твой остальной код run_bot() без изменений              
                         # --- ПОИСК ВХОДА ---
+                        def strategy ();
                         upper, ma, lower, volume = get_bb()
                         if not upper: 
                             await asyncio.sleep(60)
