@@ -14,6 +14,13 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", 0))
 STATE_FILE = "bot_state.json"
+CONFIG = {
+    "max_trades_per_day": 3,
+    "pause_after_2_sl_hours": 24,
+    "min_volume_24h": 15_000_000_000, # 15B - твой фильтр ФРС
+    "sl_percent": 0.015,
+    "tp_percent": 0.025
+}
 
 # --- НАСТРОЙКИ СИСТЕМЫ ---
 SYMBOL = "BTC/USD"
@@ -341,7 +348,7 @@ async def shutdown_command(update, context):
         except Exception as e2:
             logging.error(f"[ERROR] Failed to send error message: {e2}")
 
-# --- ОСНОВНОЙ ЦИКЛ ---
+##          # --- ОСНОВНОЙ ЦИКЛ ---
 def run_bot():
     global shutdown_event
     shutdown_event = asyncio.Event()
@@ -354,6 +361,24 @@ def run_bot():
     app.add_handler(CommandHandler("close", close_command))
     app.add_handler(CommandHandler("shutd", shutdown_command))
     
+    def is_extreme_of_range(df, lookback=48):
+        if len(df) < lookback:
+            return None
+        recent = df.tail(lookback)
+        box_high = recent['high'].max()
+        box_low = recent['low'].min()
+        box_range = box_high - box_low
+        if box_range < box_high * 0.01:
+            return None
+        price = df['close'].iloc[-1]
+        top_zone = box_high - box_range * 0.15
+        bottom_zone = box_low + box_range * 0.15
+        if price >= top_zone:
+            return "TOP"
+        if price <= bottom_zone:
+            return "BOTTOM"
+        return None
+    
     async def trading_loop():
         async with app:
             await app.initialize()
@@ -361,7 +386,7 @@ def run_bot():
             logging.info("Bot initialized and starting polling...")
             await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
             logging.info("Bot updater polling started ✓")
-            send_telegram(f"🚀 Bot started 7.2.0-filters | Pair: {SYMBOL}")
+            send_telegram(f"🚀 Bot started 7.3.0-range | Pair: {SYMBOL}")
             
             try:
                 while not shutdown_event.is_set():
@@ -374,92 +399,72 @@ def run_bot():
                             stats["last_day"] = today
                             stats["daily_trades"] = 0
                             save_state(stats)
+
+                        # --- 1. ПРОВЕРКА ОТКРЫТОЙ ПОЗИЦИИ (ПЕРВОЙ!) ---
+                        pos = get_open_position()
+                        if pos:
+                            await update_position_log(pos)
+                            await asyncio.sleep(60)
+                            continue
                         
                         # --- ФИЛЬТР: Лимит сделок ---
-                        if stats.get("daily_trades", 0) >= MAX_TRADES_PER_DAY:
+                        if stats["daily_trades"] >= 3:
+                            await asyncio.sleep(300)
+                            continue
+
+                        # --- ФИЛЬТР: Пауза после 2х SL ---
+                        last_two = stats.get("last_trades", [])[-2:]
+                        if len(last_two) == 2 and all(t["pnl"] < 0 for t in last_two):
+                            send_telegram(f"⏸️ Пауза 24ч после 2х SL")
+                            await asyncio.sleep(86400)
+                            continue
+
+                        # --- ФИЛЬТР: Низкий объем ---
+                        df = get_ohlcv(SYMBOL, "1h", 100)
+                        vol_24h = df["volume"].tail(24).sum()
+                        if vol_24h < 15_000_000_000:
+                            if stats["daily_trades"] >= 1:
+                                await asyncio.sleep(600)
+                                continue
+
+                        # --- СИГНАЛ ТВОЕЙ МОДЕЛИ ---
+                        side = get_model_signal(df) # твой старый get_signal()
+                        if not side:
                             await asyncio.sleep(60)
                             continue
-                        
-                        # --- ФИЛЬТР: Кулдаун после стопа ---
-                        if time.time() - stats.get("last_stop_time", 0) < COOLDOWN_HOURS * 3600:
-                            await asyncio.sleep(60)
+
+                        # --- 2. ГЛАВНЫЙ ФИЛЬТР: Только от границ ---
+                        extreme = is_extreme_of_range(df)
+                        if side == "SHORT" and extreme != "TOP":
+                            logging.info(f"❌ SHORT в середине бокса -> SKIP | Price: {df['close'].iloc[-1]}")
+                            await asyncio.sleep(120)
                             continue
-                        
-                        # --- ПРОВЕРКА ОТКРЫТОЙ ПОЗИЦИИ ---
-                        if stats.get("open_position"):
-                            pos = stats["open_position"]
-                            ticker = get_ticker()
-                            if not ticker:
-                                logging.warning("Ticker is None, retrying...")
-                                await asyncio.sleep(60)
-                                continue
-                            bid, ask = ticker["bid"], ticker["ask"]
-                            
-                            # Лонг SL
-                            if pos["side"] == "buy" and bid <= pos["sl"]:
-                                pnl = (pos["sl"] - pos["entry"]) * pos["volume"] * (1 - FEE_PCT)
-                                stats["paper_balance"] += pnl
-                                stats["total_trades"] += 1
-                                stats["total_wins"] += 1 if pnl > 0 else 0
-                                stats["total_pnl"] += pnl
-                                stats["open_position"] = None
-                                stats["last_stop_time"] = time.time()
-                                save_state(stats)
-                                wr = (stats["total_wins"]/stats["total_trades"]*100)
-                                msg = f"🔴 *SL CLOSE*\nSide: `LONG`\nPrice: `${pos['sl']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
-                                send_telegram(msg)
-                                logging.info(f"[TRADE] SL closed LONG")
-                                continue
-                            
-                            # Лонг TP
-                            if pos["side"] == "buy" and ask >= pos["tp"]:
-                                pnl = (pos["tp"] - pos["entry"]) * pos["volume"] * (1 - FEE_PCT)
-                                stats["paper_balance"] += pnl
-                                stats["total_trades"] += 1
-                                stats["total_wins"] += 1
-                                stats["total_pnl"] += pnl
-                                stats["open_position"] = None
-                                save_state(stats)
-                                wr = (stats["total_wins"]/stats["total_trades"]*100)
-                                msg = f"🟢 *TP CLOSE*\nSide: `LONG`\nPrice: `${pos['tp']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
-                                send_telegram(msg)
-                                logging.info(f"[TRADE] TP closed LONG")
-                                continue
-                            
-                            # Шорт SL
-                            if pos["side"] == "sell" and ask >= pos["sl"]:
-                                pnl = (pos["entry"] - pos["sl"]) * pos["volume"] * (1 - FEE_PCT)
-                                stats["paper_balance"] += pnl
-                                stats["total_trades"] += 1
-                                stats["total_wins"] += 1 if pnl > 0 else 0
-                                stats["total_pnl"] += pnl
-                                stats["open_position"] = None
-                                stats["last_stop_time"] = time.time()
-                                save_state(stats)
-                                wr = (stats["total_wins"]/stats["total_trades"]*100)
-                                msg = f"🔴 *SL CLOSE*\nSide: `SHORT`\nPrice: `${pos['sl']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
-                                send_telegram(msg)
-                                logging.info(f"[TRADE] SL closed SHORT")
-                                continue
-                            
-                            # Шорт TP
-                            if pos["side"] == "sell" and bid <= pos["tp"]:
-                                pnl = (pos["entry"] - pos["tp"]) * pos["volume"] * (1 - FEE_PCT)
-                                stats["paper_balance"] += pnl
-                                stats["total_trades"] += 1
-                                stats["total_wins"] += 1
-                                stats["total_pnl"] += pnl
-                                stats["open_position"] = None
-                                save_state(stats)
-                                wr = (stats["total_wins"]/stats["total_trades"]*100)
-                                msg = f"🟢 *TP CLOSE*\nSide: `SHORT`\nPrice: `${pos['tp']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
-                                send_telegram(msg)
-                                logging.info(f"[TRADE] TP closed SHORT")
-                                continue
-                            
-                            await asyncio.sleep(5)
+                        if side == "LONG" and extreme != "BOTTOM":
+                            logging.info(f"❌ LONG в середине бокса -> SKIP | Price: {df['close'].iloc[-1]}")
+                            await asyncio.sleep(120)
                             continue
-                        
+
+                        # --- ОТКРЫТИЕ ---
+                        atr = (df["high"] - df["low"]).tail(14).mean()
+                        if side == "SHORT":
+                            sl = df["high"].tail(24).max() + atr * 0.5
+                            tp = df["close"].iloc[-1] * 0.975
+                        else:
+                            sl = df["low"].tail(24).min() - atr * 0.5
+                            tp = df["close"].iloc[-1] * 1.025
+
+                        await open_position(side, sl, tp)
+                        stats["daily_trades"] += 1
+                        save_state(stats)
+
+                    except Exception as e:
+                        logging.error(f"Loop error: {e}")
+                        await asyncio.sleep(30)
+
+            except asyncio.CancelledError:
+                logging.info("Trading loop cancelled")
+
+    # ... твой остальной код run_bot() без изменений              
                         # --- ПОИСК ВХОДА ---
                         upper, ma, lower, volume = get_bb()
                         if not upper: 
