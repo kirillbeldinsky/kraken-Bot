@@ -428,12 +428,12 @@ def run_bot():
                                 continue
 
                         # --- СИГНАЛ ТВОЕЙ МОДЕЛИ ---
-                        side = get_model_signal(df) # твой старый get_signal()
+                        side = get_model_signal(df)
                         if not side:
                             await asyncio.sleep(60)
                             continue
 
-                        # --- 2. ГЛАВНЫЙ ФИЛЬТР: Только от границ ---
+                        # --- ГЛАВНЫЙ ФИЛЬТР: Только от границ ---
                         extreme = is_extreme_of_range(df)
                         if side == "SHORT" and extreme != "TOP":
                             logging.info(f"❌ SHORT в середине бокса -> SKIP | Price: {df['close'].iloc[-1]}")
