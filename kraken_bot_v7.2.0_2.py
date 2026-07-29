@@ -443,11 +443,11 @@ def run_bot():
                         # --- ФИЛЬТР: Тренд ---
                         trend = get_trend()
                         
-                        if price <= lower:
+                        elif price <= lower:
                             if TREND_FILTER and trend == "down":
-                                logging.info(f"SKIP Long - downtrend")
-                                await asyncio.sleep(60)
-                                continue
+                            logging.info(f"SKIP Long - downtrend")
+                            await asyncio.sleep(60)
+                            continue
                                                     
                             risk_amount = stats["paper_balance"] * RISK_PCT
                             sl = price * (1 - STOP_LOSS_PCT)
@@ -486,11 +486,11 @@ def run_bot():
                             "sl": sl,
                             "tp": tp
                                                     }
-                                                    stats["daily_trades"] = stats.get("daily_trades", 0) + 1
-                                                    save_state(stats)
-                                                    msg = f"🔴 *OPEN SHORT*\nEntry: ${price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
-                                                    send_telegram(msg)
-                                                    logging.info(f"[TRADE] OPEN SHORT at {price:.2f}")
+                            stats["daily_trades"] = stats.get("daily_trades", 0) + 1
+                            save_state(stats)
+                            msg = f"🔴 *OPEN SHORT*\nEntry: ${price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
+                            send_telegram(msg)
+                            logging.info(f"[TRADE] OPEN SHORT at {price:.2f}")
                          
                         # --- ПРОВЕРКА ОТКРЫТОЙ ПОЗИЦИИ ---
                         if stats.get("open_position"):
