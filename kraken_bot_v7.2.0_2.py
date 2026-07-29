@@ -88,7 +88,7 @@ def send_telegram(text):
 # --- KRAKEN API ---
 def get_ohlc(symbol, timeframe, limit):
     try:
-        url = f"https://api.kraken.com/0/public/OHLC?pair={symbol}&interval={timeframe}"
+        url = f"https://api.kraken.com/0/public/OHLC?pair={XXBTZUSD}&interval={15}"
         response = requests.get(url, timeout=10)
         data = response.json()
 
