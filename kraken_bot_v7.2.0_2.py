@@ -422,12 +422,12 @@ def run_bot():
                             logging.info("SKIP - not enough volume data")
                             continue
                                                 
-                            volumes = ohlc["volumes"]
-                            vol_ma = sum(volumes[-20:]) / 20
+                        volumes = ohlc["volumes"]
+                        vol_ma = sum(volumes[-20:]) / 20
                                                 
-                                if volume < vol_ma * 0.55:
-                                logging.info(f"SKIP - low relative volume ({volume:.2f} < {vol_ma*0.55:.2f})")
-                                continue
+                        if volume < vol_ma * 0.55:
+                            logging.info(f"SKIP - low relative volume ({volume:.2f} < {vol_ma*0.55:.2f})")
+                            continue
                         
                          # --- ФИЛЬТР: ATR (анти-флэт) ---
                         atr = get_atr()
