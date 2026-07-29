@@ -1037,9 +1037,9 @@ def run_bot():
                         
                         if price <= lower:
                             if TREND_FILTER and trend == "down":
-                            logging.info(f"SKIP Long - downtrend")
-                            await asyncio.sleep(60)
-                            continue
+                                logging.info(f"SKIP Long - downtrend")
+                                await asyncio.sleep(60)
+                                continue
                                                     
                             risk_amount = stats["paper_balance"] * RISK_PCT
                             sl = price * (1 - STOP_LOSS_PCT)
@@ -1062,9 +1062,9 @@ def run_bot():
                         # ШОРТ
                         elif price >= upper:
                             if TREND_FILTER and trend == "up":
-                            logging.info(f"SKIP Short - uptrend")
-                            await asyncio.sleep(60)
-                            continue
+                                logging.info(f"SKIP Short - uptrend")
+                                await asyncio.sleep(60)
+                                continue
                                                     
                             risk_amount = stats["paper_balance"] * RISK_PCT
                             sl = price * (1 + STOP_LOSS_PCT)
