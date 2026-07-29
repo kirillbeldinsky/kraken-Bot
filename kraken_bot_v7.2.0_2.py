@@ -417,7 +417,7 @@ def run_bot():
                             await asyncio.sleep(5)
                             continue
                           # или continue, если внутри цикла
-                        vol_24h = df["volume"].tail(24).sum()
+                        vol_24h = df["volumes"].tail(24).sum()
                         if vol_24h < 15_000_000_000:
                             if stats["daily_trades"] >= 1:
                                 await asyncio.sleep(600)
