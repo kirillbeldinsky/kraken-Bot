@@ -600,7 +600,7 @@ def run_bot():
 if __name__ == "__main__":
     run_bot()
 
-# --- CONFIG ---
+# --- Config ---
 from dotenv import load_dotenv
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -1017,9 +1017,9 @@ def run_bot():
                             volumes = ohlc["volumes"]
                             vol_ma = sum(volumes[-20:]) / 20
                                                 
-                                if volume < vol_ma * 0.55:
-                                logging.info(f"SKIP - low relative volume ({volume:.2f} < {vol_ma*0.55:.2f})")
-                                continue
+                        if volume < vol_ma * 0.55:
+                            logging.info(f"SKIP - low relative volume ({volume:.2f} < {vol_ma*0.55:.2f})")
+                             continue
                         
                          # --- ФИЛЬТР: ATR (анти-флэт) ---
                         atr = get_atr()
