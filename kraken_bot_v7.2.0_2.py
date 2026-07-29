@@ -1054,9 +1054,9 @@ def run_bot():
                                 "tp": tp
                                 }
                             stats["daily_trades"] = stats.get("daily_trades", 0) + 1
-                                save_state(stats)
-                                msg = f"🟢 *OPEN LONG*\nEntry: ${price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
-                                send_telegram(msg)
+                            save_state(stats)
+                            msg = f"🟢 *OPEN LONG*\nEntry: ${price:.2f}\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`"
+                            send_telegram(msg)
                                 logging.info(f"[TRADE] OPEN LONG at {price:.2f}")
                                                 
                         # ШОРТ
