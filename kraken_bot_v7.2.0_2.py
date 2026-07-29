@@ -1029,8 +1029,8 @@ def run_bot():
                         
                             atr_pct = atr / price
                             if atr_pct < 0.00045:
-                            logging.info(f"SKIP - ATR too low ({atr_pct:.5f})")
-                            continue
+                                logging.info(f"SKIP - ATR too low ({atr_pct:.5f})")
+                                continue
                             
                         # --- ФИЛЬТР: Тренд ---
                         trend = get_trend()
