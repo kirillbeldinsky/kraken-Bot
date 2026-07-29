@@ -408,14 +408,6 @@ def run_bot():
                             await asyncio.sleep(60)
                             continue
                         
-                        # --- ФИЛЬТР: Низкий объем ---
-                        df = get_ohlc(SYMBOL, "1h", 100)
-                        vol_24h = df["volume"].tail(24).sum()
-                        if vol_24h < 15_000_000_000:
-                            if stats["daily_trades"] >= 1:
-                                await asyncio.sleep(600)
-                                continue
-                        
                          # --- ФИЛЬТР: ОТНОСИТЕЛЬНЫЙ ОБЪЕМ ---
                         ohlc = get_ohlc()
                         if not ohlc or len(ohlc["volumes"]) < 20:
