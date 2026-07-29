@@ -86,32 +86,34 @@ def send_telegram(text):
         logging.error(f"send_telegram error: {e}")
 
 # --- KRAKEN API ---
-def get_ohlc():
-    """
-    Returns a dict with lists: {'closes', 'highs', 'lows', 'volumes'} or None on error.
-    Uses KRAKEN_SYMBOL and TIMEFRAME.
-    """
+def get_ohlc(symbol, timeframe, limit):
     try:
-        resp = requests.get(
-            f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}",
-            timeout=10
-        )
-        resp.raise_for_status()
-        result = resp.json().get("result", {})
-        # result may contain a 'last' key; pick the first key that isn't 'last'
-        pair_key = next((k for k in result.keys() if k != "last"), None)
-        if not pair_key:
-            logging.error("get_ohlc: no pair data in response")
-            return None
-        ohlc = result[pair_key]
-        closes = [float(x[4]) for x in ohlc]
-        highs = [float(x[2]) for x in ohlc]
-        lows = [float(x[3]) for x in ohlc]
-        volumes = [float(x[6]) for x in ohlc]
-        return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes}
-    except Exception as e:
-        logging.exception(f"get_ohlc error: {e}")
+        url = f"https://api.kraken.com/0/public/OHLC?pair={symbol}&interval={timeframe}"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+
+        if "result" in data and symbol in data["result"]:
+            ohlc_data = data["result"][symbol][-limit:]
+
+            closes = [float(item[4]) for item in ohlc_data]
+            highs = [float(item[2]) for item in ohlc_data]
+            lows = [float(item[3]) for item in ohlc_data]
+            volumes = [float(item[6]) for item in ohlc_data]
+
+            return {
+                "closes": closes,
+                "highs": highs,
+                "lows": lows,
+                "volumes": volumes
+            }
+
+        logging.error("No OHLC data found")
         return None
+
+    except Exception as e:
+        logging.error(f"Error fetching OHLC data: {e}")
+        return None
+
 
 def get_ticker():
     """
