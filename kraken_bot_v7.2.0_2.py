@@ -106,7 +106,8 @@ def get_ohlc(symbol, timeframe, limit):
                 "lows": lows,
                 "volumes": volumes
             }
-logging.error(f"Raw OHLC response: {data}")
+        logging.error(f"Raw OHLC response: {data}")
+        return None
 
         logging.error("No OHLC data found")
         return None
