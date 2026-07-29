@@ -413,8 +413,8 @@ def run_bot():
                         vol_24h = df["volume"].tail(24).sum()
                         if vol_24h < 15_000_000_000:
                             if stats["daily_trades"] >= 1:
-                            await asyncio.sleep(600)
-                            continue
+                                await asyncio.sleep(600)
+                                continue
                         
                          # --- ФИЛЬТР: ОТНОСИТЕЛЬНЫЙ ОБЪЕМ ---
                         ohlc = get_ohlc()
