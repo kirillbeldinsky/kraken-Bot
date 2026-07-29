@@ -86,14 +86,14 @@ def send_telegram(text):
         logging.error(f"send_telegram error: {e}")
 
 # --- KRAKEN API ---
-def get_ohlc(symbol, timeframe, limit):
+def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, limit):
     try:
-        url = f"https://api.kraken.com/0/public/OHLC?pair={symbol}&interval={timeframe}"
+        url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}"
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        if "result" in data and symbol in data["result"]:
-            ohlc_data = data["result"][symbol][-limit:]
+        if "result" in data and KRAKEN_SYMBOL in data["result"]:
+            ohlc_data = data["result"][KRAKEN_SYMBOL][-limit:]
 
             closes = [float(item[4]) for item in ohlc_data]
             highs = [float(item[2]) for item in ohlc_data]
