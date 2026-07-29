@@ -1019,7 +1019,7 @@ def run_bot():
                                                 
                         if volume < vol_ma * 0.55:
                             logging.info(f"SKIP - low relative volume ({volume:.2f} < {vol_ma*0.55:.2f})")
-                             continue
+                            continue
                         
                          # --- ФИЛЬТР: ATR (анти-флэт) ---
                         atr = get_atr()
