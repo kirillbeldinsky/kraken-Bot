@@ -1153,8 +1153,8 @@ def run_bot():
                                 wr = (stats["total_wins"]/stats["total_trades"]*100)
                                 msg = f"🟢 *TP CLOSE*\nSide: `SHORT`\nPrice: `${pos['tp']:.2f}`\nPnL: ${pnl:.2f}\nBalance: `${stats['paper_balance']:.2f}`\nTrades: `{stats['total_trades']}` | WR: `{wr:.0f}%`"
                                 send_telegram(msg)
-                                    logging.info(f"[TRADE] TP closed SHORT")
-                                    continue
+                                logging.info(f"[TRADE] TP closed SHORT")
+                                continue
                             
                             await asyncio.sleep(5)
                             continue
