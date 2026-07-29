@@ -18,6 +18,7 @@ STATE_FILE = "bot_state.json"
 # --- НАСТРОЙКИ СИСТЕМЫ ---
 SYMBOL = "BTC/USD"
 KRAKEN_SYMBOL = "XXBTZUSD"
+df = get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT)
 TIMEFRAME = 15
 EMA_PERIOD = 50
 TRADE_STAGE_LIMIT = 100
