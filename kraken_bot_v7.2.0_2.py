@@ -18,7 +18,6 @@ STATE_FILE = "bot_state.json"
 # --- НАСТРОЙКИ СИСТЕМЫ ---
 SYMBOL = "BTC/USD"
 KRAKEN_SYMBOL = "XXBTZUSD"
-df = get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT)
 TIMEFRAME = 15
 EMA_PERIOD = 50
 TRADE_STAGE_LIMIT = 100
@@ -89,7 +88,7 @@ def send_telegram(text):
 # --- KRAKEN API ---
 def get_ohlc(symbol, timeframe, limit):
     try:
-        url = f"https://api.kraken.com/0/public/OHLC?pair={XXBTZUSD}&interval={15}"
+        url = f"https://api.kraken.com/0/public/OHLC?pair={symbol}&interval={timeframe}"
         response = requests.get(url, timeout=10)
         data = response.json()
 
