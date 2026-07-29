@@ -409,7 +409,7 @@ def run_bot():
                             continue
                         
                         # --- ФИЛЬТР: Низкий объем ---
-                        df = get_ohlcv(SYMBOL, "1h", 100)
+                        df = get_ohlc(SYMBOL, "1h", 100)
                         vol_24h = df["volume"].tail(24).sum()
                         if vol_24h < 15_000_000_000:
                             if stats["daily_trades"] >= 1:
