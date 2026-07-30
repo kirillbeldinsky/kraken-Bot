@@ -92,8 +92,9 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, TRADE_STAGE_LIMIT):
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        if "result" in data and KRAKEN_SYMBOL in data["result"]:
-            ohlc_data = data["result"][KRAKEN_SYMBOL][-TRADE_STAGE_LIMIT:]
+        result = data.get("result", {})
+        pair_key = next(iter(result), None)
+        ohlc_data = result[pair_key][-TRADE_STAGE_LIMIT:]
 
             closes = [float(item[4]) for item in ohlc_data]
             highs = [float(item[2]) for item in ohlc_data]
