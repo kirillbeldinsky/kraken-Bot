@@ -106,11 +106,6 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, TRADE_STAGE_LIMIT):
                 "lows": lows,
                 "volumes": volumes
             }
-        logging.error(f"Raw OHLC response: {data}")
-        return None
-
-        logging.error("No OHLC data found")
-        return None
 
     except Exception as e:
         logging.error(f"Error fetching OHLC data: {e}")
