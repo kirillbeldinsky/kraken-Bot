@@ -413,7 +413,7 @@ def run_bot():
                             continue
 
                         # --- ФИЛЬТР: Низкий объем ---
-                        df = get_ohlc(KRAKEN_SYMBOl, "1h", 100)
+                        df = get_ohlc(KRAKEN_SYMBOL, "1h", 100)
                         if df is None:
                             logging.error("OHLC returned None, skipping this cycle")
                             await asyncio.sleep(5)
