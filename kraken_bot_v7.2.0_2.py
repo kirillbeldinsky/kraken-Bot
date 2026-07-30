@@ -97,9 +97,9 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
         print("RAW RESPONSE:", data)
 
         if data.get("error"):
-        print("KRAKEN ERROR:", data["error"])
+            print("KRAKEN ERROR:", data["error"])
         else:
-        print("PAIR KEYS:", list(data.get("result", {}).keys()))
+            print("PAIR KEYS:", list(data.get("result", {}).keys()))
         result = data.get("result", {})
         if not result:
             logging.error("No OHLC data returned")
