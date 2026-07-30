@@ -90,10 +90,11 @@ def send_telegram(text):
 def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
     try:
         url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}"
+        # ADD THIS LINE RIGHT HERE
+        print("FINAL URL:", url)
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        print("FINAL URL:", url)
 
         if data.get("error"):
             logging.error(f"Kraken API error: {data['error']}")
@@ -135,7 +136,6 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
     except Exception as e:
         logging.error(f"Error fetching OHLC data: {e}")
         return None
-    print("FINAL URL:", url)
 
 
 
