@@ -86,7 +86,7 @@ def send_telegram(text):
         logging.error(f"send_telegram error: {e}")
 
 # --- KRAKEN API ---
-    def debug_kraken(KRAKEN_SYMBOL, TIMEFRAME):
+def debug_kraken(KRAKEN_SYMBOL, TIMEFRAME):
         url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}"
         print("FINAL URL:", url)
         r = requests.get(url, timeout=10)
