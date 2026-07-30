@@ -135,7 +135,7 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
     except Exception as e:
         logging.error(f"Error fetching OHLC data: {e}")
         return None
-
+    print("FINAL URL:", url)
 
 
 
