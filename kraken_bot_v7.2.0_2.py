@@ -97,7 +97,7 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
 
 
         if data.get("error"):
-            logging.error(f"Kraken API error: {data['error']}")
+            logging.error(f"Kraken API error2: {data['error']}")
             return None
 
         result = data.get("result", {})
