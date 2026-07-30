@@ -101,12 +101,12 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, TRADE_STAGE_LIMIT):
         lows = [float(item[3]) for item in ohlc_data]
         volumes = [float(item[6]) for item in ohlc_data]
 
-            return {
-                "closes": closes,
-                "highs": highs,
-                "lows": lows,
-                "volumes": volumes
-            }
+        return {
+            "closes": closes,
+            "highs": highs,
+            "lows": lows,
+            "volumes": volumes
+        }
 
     except Exception as e:
         logging.error(f"Error fetching OHLC data: {e}")
