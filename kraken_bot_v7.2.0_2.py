@@ -93,6 +93,8 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
         response = requests.get(url, timeout=10)
         data = response.json()
 
+        print("FINAL URL:", url)
+
         if data.get("error"):
             logging.error(f"Kraken API error: {data['error']}")
             return None
