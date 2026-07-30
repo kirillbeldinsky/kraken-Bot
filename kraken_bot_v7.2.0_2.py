@@ -86,20 +86,31 @@ def send_telegram(text):
         logging.error(f"send_telegram error: {e}")
 
 # --- KRAKEN API ---
-def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, TRADE_STAGE_LIMIT):
+
+def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
     try:
-        url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}&trade_stage_limit={TRADE_STAGE_LIMIT}"
+        url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}"
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        result = data.get("result", {})
-        pair_key = next(iter(result), None)
-        ohlc_data = result[pair_key][-TRADE_STAGE_LIMIT:]
+        # Check for Kraken API errors
+        if data.get("error"):
+            logging.error(f"Kraken API error: {data['error']}")
+            return None
 
-        closes = [float(item[4]) for item in ohlc_data]
-        highs = [float(item[2]) for item in ohlc_data]
-        lows = [float(item[3]) for item in ohlc_data]
-        volumes = [float(item[6]) for item in ohlc_data]
+        result = data.get("result", {})
+        if not result:
+            logging.error("No OHLC data returned")
+            return None
+
+        # Extract the correct key (Kraken returns dynamic pair names)
+        pair_key = next(iter(result))
+        ohlc_data = result[pair_key][-LIMIT:]
+
+        closes  = [float(c[4]) for c in ohlc_data]
+        highs   = [float(c[2]) for c in ohlc_data]
+        lows    = [float(c[3]) for c in ohlc_data]
+        volumes = [float(c[6]) for c in ohlc_data]
 
         return {
             "closes": closes,
@@ -111,6 +122,7 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, TRADE_STAGE_LIMIT):
     except Exception as e:
         logging.error(f"Error fetching OHLC data: {e}")
         return None
+
 
 
 def get_ticker():
