@@ -88,7 +88,7 @@ def send_telegram(text):
 # --- KRAKEN API ---
 def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, TRADE_STAGE_LIMIT):
     try:
-        url = f"https://api.kraken.com/0/public/OHLC?pair={}&interval={TIMEFRAME}&trade_stage_limit{TRADE_STAGE_LIMIT}KRAKEN_SYMBOL"
+        url = f"https://api.kraken.com/0/public/OHLC?pair={}&interval={TIMEFRAME}&trade_stage_limit{TRADE_STAGE_LIMIT}"
         print("KRAKEN_SYMBOL =", KRAKEN_SYMBOL)
         print("TIMEFRAME =", TIMEFRAME)
         response = requests.get(url, timeout=10)
