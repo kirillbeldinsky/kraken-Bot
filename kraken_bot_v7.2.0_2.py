@@ -96,8 +96,8 @@ def debug_kraken(KRAKEN_SYMBOL, TIMEFRAME):
         
         #print("FINAL URL:", url)
 
-        response = requests.get(url, timeout=10)
-        data = response.json()
+        #response = requests.get(url, timeout=10)
+        #data = response.json()
 
 
         if data.get("error"):
