@@ -138,9 +138,9 @@ def debug_kraken(KRAKEN_SYMBOL, TIMEFRAME):
             "volumes": volumes
         }
 
-    except Exception as e:
-        logging.error(f"Error fetching OHLC data: {e}")
-        return None
+    #except Exception as e:
+        #logging.error(f"Error fetching OHLC data: {e}")
+        #return None
 
 
 
