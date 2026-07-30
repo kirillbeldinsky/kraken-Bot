@@ -96,9 +96,9 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
         # Check for Kraken API errors
         print("RAW RESPONSE:", data)
 
-    #if data.get("error"):
+        if data.get("error"):
         print("KRAKEN ERROR:", data["error"])
-    #else:
+        else:
         print("PAIR KEYS:", list(data.get("result", {}).keys()))
         result = data.get("result", {})
         if not result:
