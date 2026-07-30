@@ -20,7 +20,7 @@ SYMBOL = "BTC/USD"
 KRAKEN_SYMBOL = "XXBTZUSD"
 TIMEFRAME = 15
 EMA_PERIOD = 50
-TRADE_STAGE_LIMIT = 100
+LIMIT = 100
 PAPER_BALANCE_START = 1000.0
 
 # --- РИСК ---
@@ -86,7 +86,7 @@ def send_telegram(text):
         logging.error(f"send_telegram error: {e}")
 
 # --- KRAKEN API ---
-def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME):
+def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
     try:
         url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}"
         print("FINAL URL:", url)
