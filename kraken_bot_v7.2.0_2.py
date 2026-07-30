@@ -88,7 +88,7 @@ def send_telegram(text):
 # --- KRAKEN API ---
 def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, TRADE_STAGE_LIMIT):
     try:
-        url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={TIMEFRAME}&trade_stage_limit{TRADE_STAGE_LIMIT}"
+        url = f"https://api.kraken.com/0/public/OHLC?pair={}&interval={TIMEFRAME}&trade_stage_limit{TRADE_STAGE_LIMIT}KRAKEN_SYMBOL"
         print("KRAKEN_SYMBOL =", KRAKEN_SYMBOL)
         print("TIMEFRAME =", TIMEFRAME)
         response = requests.get(url, timeout=10)
@@ -415,7 +415,7 @@ def run_bot():
                             continue
 
                         # --- ФИЛЬТР: Низкий объем ---
-                        df = get_ohlc(SYMBOL, "1h", 100)
+                        df = get_ohlc(KRAKEN_SYMBOl, "1h", 100)
                         if df is None:
                             logging.error("OHLC returned None, skipping this cycle")
                             await asyncio.sleep(5)
