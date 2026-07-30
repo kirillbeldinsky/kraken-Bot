@@ -93,21 +93,30 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        # Check for Kraken API errors
-        print("RAW RESPONSE:", data)
-
         if data.get("error"):
-            print("KRAKEN ERROR:", data["error"])
-        else:
-            print("PAIR KEYS:", list(data.get("result", {}).keys()))
-        result = data.get("result", {})
-        if not result:
-            logging.error("No OHLC data returned")
+            logging.error(f"Kraken API error: {data['error']}")
             return None
 
-        # Extract the correct key (Kraken returns dynamic pair names)
+        result = data.get("result", {})
+        if not result:
+            logging.error("Kraken returned empty result")
+            return None
+
         pair_key = next(iter(result))
-        ohlc_data = result[pair_key][-LIMIT:]
+        ohlc_data = result[pair_key]
+
+        if not ohlc_data:
+            logging.error(f"No OHLC candles for {pair_key}")
+            return None
+
+        # Slice safely
+        ohlc_data = ohlc_data[-LIMIT:]
+
+        # Validate candle structure
+        for candle in ohlc_data:
+            if len(candle) < 7:
+                logging.error("Malformed OHLC candle")
+                return None
 
         closes  = [float(c[4]) for c in ohlc_data]
         highs   = [float(c[2]) for c in ohlc_data]
@@ -124,6 +133,7 @@ def get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, LIMIT):
     except Exception as e:
         logging.error(f"Error fetching OHLC data: {e}")
         return None
+
 
 
 
