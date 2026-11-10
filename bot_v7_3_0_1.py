@@ -28,7 +28,7 @@ STOP_LOSS_PCT = 0.015   # 1.5% стоп
 TAKE_PROFIT_PCT = 0.025 # 2.5% тейк (RR 1:1.67)
 FEE_PCT = 0.0026        # комиссия биржи
 
-# --- ФИЛЬТРЫ v7.3.0 ---
+# --- ФИЛЬТРЫ v7.3.0.1 ---
 MIN_VOLUME_FILTER = 8
 MIN_ATR_PCT = 0.00045   # порог волатильности (анти-флэт)
 TREND_FILTER = True     # фильтр тренда (EMA)
@@ -272,7 +272,7 @@ async def stats_command(update: Update, context):
         funding_str = f"{deriv['funding_rate_pct']:+.4f}%" if deriv["status"] == "ok" else "N/A"
         oi_str = f"{deriv['open_interest']:,.0f} BTC" if deriv["status"] == "ok" else "N/A"
 
-        msg = f"""📊 *Stats {SYMBOL} v7.3.0*
+        msg = f"""📊 *Stats {SYMBOL} v7.3.0.1*
 
 💰 *Balance:* `${stats['paper_balance']:.2f}`
 📈 *Total Trades:* `{stats['total_trades']}`
