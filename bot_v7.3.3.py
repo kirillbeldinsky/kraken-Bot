@@ -526,46 +526,46 @@ def run_bot():
                             continue
 
                        # 4. ПОЛУЧЕНИЕ РЫНОЧНЫХ ДАННЫХ
-                    ticker = get_ticker()
-                    if not ticker:
-                        await asyncio.sleep(30)
-                        continue
-                    price = ticker["bid"]
+                        ticker = get_ticker()
+                        if not ticker:
+                            await asyncio.sleep(30)
+                            continue
+                        price = ticker["bid"]
 
-                    ohlc = get_ohlc(KRAKEN_SYMBOL, TIMEFRAME)
-                    if not ohlc or len(ohlc["closes"]) < 20:
-                        await asyncio.sleep(30)
-                        continue
+                        ohlc = get_ohlc(KRAKEN_SYMBOL, TIMEFRAME)
+                        if not ohlc or len(ohlc["closes"]) < 20:
+                            await asyncio.sleep(30)
+                            continue
 
-                    upper, ma, lower, avg_vol, last_vol = get_bb()
-                    if upper == 0:
-                        await asyncio.sleep(30)
-                        continue
+                        upper, ma, lower, avg_vol, last_vol = get_bb()
+                        if upper == 0:
+                            await asyncio.sleep(30)
+                            continue
 
-                    # Фильтр относительного объема свечи
-                    if last_vol < avg_vol * 0.55:
-                        logging.info(f"SKIP: low relative volume ({last_vol:.2f} < {avg_vol * 0.55:.2f})")
-                        await asyncio.sleep(60)
-                        continue
+                        # Фильтр относительного объема свечи
+                        if last_vol < avg_vol * 0.55:
+                            logging.info(f"SKIP: low relative volume ({last_vol:.2f} < {avg_vol * 0.55:.2f})")
+                            await asyncio.sleep(60)
+                            continue
 
-                    # vwap_volume_filter
-                    vwap = get_vwap(ohlc['highs'], ohlc['lows'], ohlc['closes'], ohlc['volumes'])
-                    vol_profile_check = last_vol > avg_vol  # Условие активности объемов
+                        # vwap_volume_filter
+                        vwap = get_vwap(ohlc['highs'], ohlc['lows'], ohlc['closes'], ohlc['volumes'])
+                        vol_profile_check = last_vol > avg_vol  # Условие активности объемов
 
-                    # Фильтр ATR (анти-флэт)
-                    atr = get_atr()
-                    if atr == 0 or (atr / price) < MIN_ATR_PCT:
-                        logging.info("SKIP: ATR too low (flat market)")
-                        await asyncio.sleep(60)
-                        continue
+                        # Фильтр ATR (анти-флэт)
+                        atr = get_atr()
+                        if atr == 0 or (atr / price) < MIN_ATR_PCT:
+                            logging.info("SKIP: ATR too low (flat market)")
+                            await asyncio.sleep(60)
+                            continue
 
-                    # Трендовые фильтры (локальный 15m и глобальный 1h)
-                    trend = get_trend()
-                    mtf_trend = get_trend_mtf(interval=60)  # <-- ИСПРАВЛЕНИЕ: объявление переменной
+                        # Трендовые фильтры (локальный 15m и глобальный 1h)
+                        trend = get_trend()
+                        mtf_trend = get_trend_mtf(interval=60)  # <-- ИСПРАВЛЕНИЕ: объявление переменной
 
-                    # 5. ДЕРИВАТИВНЫЙ ФИЛЬТР (Funding Rate & Open Interest)
-                    deriv = get_derivatives_data()
-                    funding_rate = deriv.get("funding_rate", 0.0)
+                        # 5. ДЕРИВАТИВНЫЙ ФИЛЬТР (Funding Rate & Open Interest)
+                        deriv = get_derivatives_data()
+                        funding_rate = deriv.get("funding_rate", 0.0)
 
                        # =====================================================
                         # 6. СИГНАЛЫ НА ВХОД (LONG)
