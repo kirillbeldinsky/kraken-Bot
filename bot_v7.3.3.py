@@ -311,7 +311,7 @@ async def stats_command(update: Update, context):
         funding_str = f"{deriv['funding_rate_pct']:+.4f}%" if deriv["status"] == "ok" else "N/A"
         oi_str = f"{deriv['open_interest']:,.0f} BTC" if deriv["status"] == "ok" else "N/A"
 
-        msg = f"""📊 *Stats {SYMBOL} v7.3.1*
+        msg = f"""📊 *Stats {SYMBOL} v7.3.3*
 
 💰 *Balance:* `${stats['paper_balance']:.2f}`
 📈 *Total Trades:* `{stats['total_trades']}`
@@ -421,7 +421,7 @@ def run_bot():
             await app.start()
             logging.info("Bot updater polling started ✓")
             await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-            send_telegram(f"🚀 *Bot started v7.3.1 with VWAP & Derivatives* | Pair: `{SYMBOL}`")
+            send_telegram(f"🚀 *Bot started v7.3.3 with VWAP & Derivatives* | Pair: `{SYMBOL}`")
 
             try:
                 while not shutdown_event.is_set():
