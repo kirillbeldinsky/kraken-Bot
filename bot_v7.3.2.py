@@ -234,7 +234,28 @@ def get_atr(periods=14):
         tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
         tr_list.append(tr)
     return sum(tr_list) / len(tr_list)
+    
+def get_trend_mtf(symbol=KRAKEN_SYMBOL, interval=60):
+    """
+    Определение глобального тренда на старшем таймфрейме (по умолчанию 1h / 60 мин).
+    interval: 60 (1 час), 240 (4 часа), 1440 (1 день).
+    Использует соотношение EMA20 / EMA50 с порогом ±0.3%.
+    """
+    # Запрашиваем минимум 50 свечей старшего интервала
+    data = get_ohlc(symbol=symbol, interval=interval, limit=100)
+    if not data or len(data["closes"]) < 50:
+        return "range"
 
+    closes = data["closes"]
+    ema20 = sum(closes[-20:]) / 20
+    ema50 = sum(closes[-50:]) / 50
+
+    if ema20 < ema50 * 0.997:
+        return "down"
+    if ema20 > ema50 * 1.003:
+        return "up"
+    return "range"
+    
 def get_trend():
     """
     Определение тренда через соотношение EMA20 / EMA50.
@@ -410,7 +431,9 @@ def run_bot():
                             stats["daily_trades"] = 0
                             save_state(stats)
 
-                        # 2. ПРОВЕРКА ОТКРЫТОЙ ПОЗИЦИИ (если есть)
+                         # =====================================================
+                        # 2. ПРОВЕРКА ОТКРЫТОЙ ПОЗИЦИИ (SL / TP)
+                        # =====================================================
                         if stats.get("open_position"):
                             pos = stats["open_position"]
                             ticker = get_ticker()
@@ -419,58 +442,73 @@ def run_bot():
                                 continue
 
                             bid, ask = ticker["bid"], ticker["ask"]
+                            side = pos["side"]
+                            entry = pos["entry"]
+                            vol = pos["volume"]
+                            
+                            close_reason = None
+                            exit_price = 0.0
 
-                            # Лонг SL
-                            if pos["side"] == "buy" and bid <= pos["sl"]:
-                                pnl = (pos["sl"] - pos["entry"]) * pos["volume"] * (1 - FEE_PCT)
-                                stats["paper_balance"] += pnl
+                            # --- ПРОВЕРКА LONG (выход через Sell по цене BID) ---
+                            if side == "buy":
+                                if bid <= pos["sl"]:
+                                    close_reason = "SL"
+                                    exit_price = bid  # Реальная цена пробоя (учет проскальзывания)
+                                elif bid >= pos["tp"]:
+                                    close_reason = "TP"
+                                    exit_price = pos["tp"]
+
+                            # --- ПРОВЕРКА SHORT (выход через Buy по цене ASK) ---
+                            elif side == "sell":
+                                if ask >= pos["sl"]:
+                                    close_reason = "SL"
+                                    exit_price = ask  # Реальная цена пробоя (учет проскальзывания)
+                                elif ask <= pos["tp"]:
+                                    close_reason = "TP"
+                                    exit_price = pos["tp"]
+
+                            # --- ИСПОЛНЕНИЕ ЗАКРЫТИЯ ---
+                            if close_reason:
+                                # 1. Расчет грязного PnL
+                                if side == "buy":
+                                    gross_pnl = (exit_price - entry) * vol
+                                else:
+                                    gross_pnl = (entry - exit_price) * vol
+
+                                # 2. Честный расчет комиссии со всего оборота (вход + выход)
+                                total_turnover = (entry + exit_price) * vol
+                                fee = total_turnover * FEE_PCT
+                                net_pnl = gross_pnl - fee
+
+                                # 3. Обновление статистики
+                                stats["paper_balance"] += net_pnl
                                 stats["total_trades"] += 1
-                                stats["total_wins"] += 1 if pnl > 0 else 0
-                                stats["total_pnl"] += pnl
+                                if net_pnl > 0:
+                                    stats["total_wins"] += 1
+                                stats["total_pnl"] += net_pnl
                                 stats["open_position"] = None
-                                stats["last_stop_time"] = time.time()
+
+                                # Если выбило по SL — включаем кулдаун
+                                if close_reason == "SL":
+                                    stats["last_stop_time"] = time.time()
+
                                 save_state(stats)
-                                send_telegram(f"🔴 *SL CLOSE (LONG)*\nPrice: `${pos['sl']:.2f}` | PnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`")
+
+                                # 4. Уведомление в Telegram
+                                icon = "🟢" if net_pnl > 0 else "🔴"
+                                side_str = "LONG" if side == "buy" else "SHORT"
+                                msg = (
+                                    f"{icon} *{close_reason} CLOSE ({side_str})*\n"
+                                    f"Exit Price: `${exit_price:.2f}` (Target: `${pos[close_reason.lower()]:.2f}`)\n"
+                                    f"Gross PnL: `${gross_pnl:+.2f}` | Fee: `${fee:.2f}`\n"
+                                    f"Net PnL: `${net_pnl:+.2f}`\n"
+                                    f"Balance: `${stats['paper_balance']:.2f}`"
+                                )
+                                send_telegram(msg)
+                                logging.info(f"[TRADE] {close_reason} CLOSE {side_str} at {exit_price:.2f}, Net PnL: {net_pnl:.2f}")
                                 continue
 
-                            # Лонг TP
-                            if pos["side"] == "buy" and ask >= pos["tp"]:
-                                pnl = (pos["tp"] - pos["entry"]) * pos["volume"] * (1 - FEE_PCT)
-                                stats["paper_balance"] += pnl
-                                stats["total_trades"] += 1
-                                stats["total_wins"] += 1
-                                stats["total_pnl"] += pnl
-                                stats["open_position"] = None
-                                save_state(stats)
-                                send_telegram(f"🟢 *TP CLOSE (LONG)*\nPrice: `${pos['tp']:.2f}` | PnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`")
-                                continue
-
-                            # Шорт SL
-                            if pos["side"] == "sell" and ask >= pos["sl"]:
-                                pnl = (pos["entry"] - pos["sl"]) * pos["volume"] * (1 - FEE_PCT)
-                                stats["paper_balance"] += pnl
-                                stats["total_trades"] += 1
-                                stats["total_wins"] += 1 if pnl > 0 else 0
-                                stats["total_pnl"] += pnl
-                                stats["open_position"] = None
-                                stats["last_stop_time"] = time.time()
-                                save_state(stats)
-                                send_telegram(f"🔴 *SL CLOSE (SHORT)*\nPrice: `${pos['sl']:.2f}` | PnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`")
-                                continue
-
-                            # Шорт TP
-                            if pos["side"] == "sell" and bid <= pos["tp"]:
-                                pnl = (pos["entry"] - pos["tp"]) * pos["volume"] * (1 - FEE_PCT)
-                                stats["paper_balance"] += pnl
-                                stats["total_trades"] += 1
-                                stats["total_wins"] += 1
-                                stats["total_pnl"] += pnl
-                                stats["open_position"] = None
-                                save_state(stats)
-                                send_telegram(f"🟢 *TP CLOSE (SHORT)*\nPrice: `${pos['tp']:.2f}` | PnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`")
-                                continue
-
-                            # Если позиция открыта, проверяем каждые 5 сек
+                            # Если позиция удерживается, спим 5 секунд до следующей проверки тикера
                             await asyncio.sleep(5)
                             continue
 
@@ -523,20 +561,45 @@ def run_bot():
                         deriv = get_derivatives_data()
                         funding_rate = deriv.get("funding_rate", 0.0)
 
-                        # 6. СИГНАЛЫ НА ВХОД
-                        # Сигнал LONG: отскок от нижней полосы Боллинджера ИЛИ подтвержденный импульс выше VWAP с объемом
-                        if (price <= lower) or (price > vwap and vol_profile_check and trend == "up" and price < upper):
-                            if TREND_FILTER and trend == "down":
-                                logging.info("SKIP Long: downtrend")
+                       # =====================================================
+                        # 6. СИГНАЛЫ НА ВХОД (LONG)
+                        # =====================================================
+                        
+                        # Базовые фильтры активности свечи 15m
+                        vol_ok = last_vol >= avg_vol * 0.55
+                        atr_ok = atr > 0 and (atr / price) >= MIN_ATR_PCT
+
+                        # 1. Условия триггеров:
+                        # А) Отскок от нижней полосы Боллинджера (при подтвержденном объеме и волатильности)
+                        bounce_signal = (price <= lower) and vol_ok and atr_ok
+
+                        # Б) Подтвержденный импульс выше VWAP по локальному аптренду (внутри канала)
+                        breakout_signal = (
+                            price > vwap 
+                            and vol_profile_check 
+                            and trend == "up" 
+                            and price < upper
+                        )
+
+                        # 2. Проверка входа:
+                        if bounce_signal or breakout_signal:
+                            # 1) Защита от торговли против тренда (локального 15m или старшего 1h)
+                            if TREND_FILTER and (trend == "down" or mtf_trend == "down"):
+                                logging.info(
+                                    f"SKIP Long: downtrend active (15m: {trend}, 1h: {mtf_trend})"
+                                )
                                 await asyncio.sleep(60)
                                 continue
 
-                            # Защита от входа в перегретый лонг
+                            # 2) Защита от перегрева по ставке финансирования Binance
                             if funding_rate > MAX_FUNDING_LONG:
-                                logging.info(f"SKIP Long: funding too high ({funding_rate * 100:.4f}% > {MAX_FUNDING_LONG * 100:.2f}%)")
+                                logging.info(
+                                    f"SKIP Long: funding too high ({funding_rate * 100:.4f}% > {MAX_FUNDING_LONG * 100:.2f}%)"
+                                )
                                 await asyncio.sleep(60)
                                 continue
 
+                            # 3) Расчет позиции и риск-менеджмент
                             risk_amount = stats["paper_balance"] * RISK_PCT
                             sl = price * (1 - STOP_LOSS_PCT)
                             tp = price * (1 + TAKE_PROFIT_PCT)
@@ -552,27 +615,56 @@ def run_bot():
                             stats["daily_trades"] = stats.get("daily_trades", 0) + 1
                             save_state(stats)
 
-                            msg = f"🟢 *OPEN LONG*\nEntry: `${price:.2f}` | VWAP: `${vwap:.2f}`\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`\nFunding: `{funding_rate*100:+.4f}%`"
+                            signal_type = "BOUNCE" if bounce_signal else "BREAKOUT"
+                            msg = (
+                                f"🟢 *OPEN LONG ({signal_type})*\n"
+                                f"Entry: `${price:.2f}` | VWAP: `${vwap:.2f}`\n"
+                                f"SL: `${sl:.2f}` | TP: `${tp:.2f}`\n"
+                                f"Volume: `{volume:.4f}` | Trend: `{trend}` (1h: `{mtf_trend}`)\n"
+                                f"Funding: `{funding_rate * 100:+.4f}%`"
+                            )
                             send_telegram(msg)
-                            logging.info(f"[TRADE] OPEN LONG at {price:.2f}")
+                            logging.info(f"[TRADE] OPEN LONG ({signal_type}) at {price:.2f}")
 
-                        # Сигнал SHORT: отскок от верхней полосы Боллинджера ИЛИ подтвержденный импульс ниже VWAP с объемом
-                        elif (price >= upper) or (price < vwap and vol_profile_check and trend == "down" and price > lower):
-                            if TREND_FILTER and trend == "up":
-                                logging.info("SKIP Short: uptrend")
+# =====================================================
+                        # 6. СИГНАЛЫ НА ВХОД (SHORT)
+                        # =====================================================
+                        
+                        # 1. Условия триггеров:
+                        # А) Отскок от верхней полосы Боллинджера (при подтвержденном объеме и волатильности)
+                        bounce_short_signal = (price >= upper) and vol_ok and atr_ok
+
+                        # Б) Подтвержденный импульс ниже VWAP по локальному даунтренду (внутри канала)
+                        breakdown_short_signal = (
+                            price < vwap 
+                            and vol_profile_check 
+                            and trend == "down" 
+                            and price > lower
+                        )
+
+                        # 2. Проверка входа:
+                        if bounce_short_signal or breakdown_short_signal:
+                            # 1) Защита от торговли против восходящего тренда (15m или 1h)
+                            if TREND_FILTER and (trend == "up" or mtf_trend == "up"):
+                                logging.info(
+                                    f"SKIP Short: uptrend active (15m: {trend}, 1h: {mtf_trend})"
+                                )
                                 await asyncio.sleep(60)
                                 continue
 
-                            # Защита от входа в перегретый шорт
+                            # 2) Защита от шорт-сквиза при отрицательном фандинге (перегруз шортов)
                             if funding_rate < MIN_FUNDING_SHORT:
-                                logging.info(f"SKIP Short: funding too low ({funding_rate * 100:.4f}% < {MIN_FUNDING_SHORT * 100:.2f}%)")
+                                logging.info(
+                                    f"SKIP Short: funding too low ({funding_rate * 100:.4f}% < {MIN_FUNDING_SHORT * 100:.2f}%)"
+                                )
                                 await asyncio.sleep(60)
                                 continue
 
+                            # 3) Расчет позиции и риск-менеджмент для SHORT
                             risk_amount = stats["paper_balance"] * RISK_PCT
-                            sl = price * (1 + STOP_LOSS_PCT)
-                            tp = price * (1 - TAKE_PROFIT_PCT)
-                            volume = risk_amount / (sl - price)
+                            sl = price * (1 + STOP_LOSS_PCT)  # Стоп-лосс ВЫШЕ цены входа
+                            tp = price * (1 - TAKE_PROFIT_PCT)  # Тейк-профит НИЖЕ цены входа
+                            volume = risk_amount / (sl - price)  # Делитель (sl - price) > 0
 
                             stats["open_position"] = {
                                 "side": "sell",
@@ -584,9 +676,16 @@ def run_bot():
                             stats["daily_trades"] = stats.get("daily_trades", 0) + 1
                             save_state(stats)
 
-                            msg = f"🔴 *OPEN SHORT*\nEntry: `${price:.2f}` | VWAP: `${vwap:.2f}`\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`\nFunding: `{funding_rate*100:+.4f}%`"
+                            signal_type = "BOUNCE" if bounce_short_signal else "BREAKDOWN"
+                            msg = (
+                                f"🔴 *OPEN SHORT ({signal_type})*\n"
+                                f"Entry: `${price:.2f}` | VWAP: `${vwap:.2f}`\n"
+                                f"SL: `${sl:.2f}` | TP: `${tp:.2f}`\n"
+                                f"Volume: `{volume:.4f}` | Trend: `{trend}` (1h: `{mtf_trend}`)\n"
+                                f"Funding: `{funding_rate * 100:+.4f}%`"
+                            )
                             send_telegram(msg)
-                            logging.info(f"[TRADE] OPEN SHORT at {price:.2f}")
+                            logging.info(f"[TRADE] OPEN SHORT ({signal_type}) at {price:.2f}")
 
                         await asyncio.sleep(60)
 
