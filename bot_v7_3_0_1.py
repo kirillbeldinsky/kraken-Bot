@@ -202,6 +202,13 @@ def get_derivatives_data(symbol="BTCUSDT"):
         return data
 
 # --- ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ ---
+def get_vwap(highs, lows, closes, volumes):
+    typical_price = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+    tp_vol = [tp * v for tp, v in zip(typical_price, volumes)]
+    cumulative_tp_vol = sum(tp_vol)
+    cumulative_vol = sum(volumes)
+    return cumulative_tp_vol / cumulative_vol if cumulative_vol != 0 else 0
+    
 def get_atr(periods=14):
     """
     Расчет ATR за последние `periods` свечей.
@@ -484,6 +491,15 @@ def run_bot():
                         # Фильтр относительного объема свечи
                         if last_vol < avg_vol * 0.55:
                             logging.info(f"SKIP: low relative volume ({last_vol:.2f} < {avg_vol * 0.55:.2f})")
+                            await asyncio.sleep(60)
+                            continue
+
+                        # vwap_voliume_filter 
+                        vwap = get_vwap(ohlc['highs'], ohlc['lows'], ohlc['closes'], ohlc['volumes'])
+                        vol_profile_check = last_vol > avg_vol # Условие активности объемов
+
+                         if price <= vwap or not vol_profile_check:
+                            logging.info("SKIP: No VWAP confirmation or volume")
                             await asyncio.sleep(60)
                             continue
 
