@@ -396,7 +396,7 @@ def run_bot():
             await app.start()
             logging.info("Bot updater polling started ✓")
             await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-            send_telegram(f"🚀 *Bot started v7.3.0.1 with VWAP & Derivatives* | Pair: `{SYMBOL}`")
+            send_telegram(f"🚀 *Bot started v7.3.1 with VWAP & Derivatives* | Pair: `{SYMBOL}`")
 
             try:
                 while not shutdown_event.is_set():
