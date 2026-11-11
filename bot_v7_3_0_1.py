@@ -202,13 +202,20 @@ def get_derivatives_data(symbol="BTCUSDT"):
         return data
 
 # --- ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ ---
-def get_vwap(highs, lows, closes, volumes):
-    typical_price = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
-    tp_vol = [tp * v for tp, v in zip(typical_price, volumes)]
+def get_vwap(highs, lows, closes, volumes, periods=20):
+    """
+    Расчет VWAP за последние `periods` свечей.
+    """
+    h_slice = highs[-periods:]
+    l_slice = lows[-periods:]
+    c_slice = closes[-periods:]
+    v_slice = volumes[-periods:]
+    typical_price = [(h + l + c) / 3.0 for h, l, c in zip(h_slice, l_slice, c_slice)]
+    tp_vol = [tp * v for tp, v in zip(typical_price, v_slice)]
     cumulative_tp_vol = sum(tp_vol)
-    cumulative_vol = sum(volumes)
-    return cumulative_tp_vol / cumulative_vol if cumulative_vol != 0 else 0
-    
+    cumulative_vol = sum(v_slice)
+    return cumulative_tp_vol / cumulative_vol if cumulative_vol != 0 else 0.0
+
 def get_atr(periods=14):
     """
     Расчет ATR за последние `periods` свечей.
@@ -389,7 +396,7 @@ def run_bot():
             await app.start()
             logging.info("Bot updater polling started ✓")
             await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-            send_telegram(f"🚀 *Bot started v7.3.0 with Derivatives* | Pair: `{SYMBOL}`")
+            send_telegram(f"🚀 *Bot started v7.3.0.1 with VWAP & Derivatives* | Pair: `{SYMBOL}`")
 
             try:
                 while not shutdown_event.is_set():
@@ -483,6 +490,11 @@ def run_bot():
                             continue
                         price = ticker["bid"]
 
+                        ohlc = get_ohlc(KRAKEN_SYMBOL, TIMEFRAME)
+                        if not ohlc or len(ohlc["closes"]) < 20:
+                            await asyncio.sleep(30)
+                            continue
+
                         upper, ma, lower, avg_vol, last_vol = get_bb()
                         if upper == 0:
                             await asyncio.sleep(30)
@@ -494,14 +506,9 @@ def run_bot():
                             await asyncio.sleep(60)
                             continue
 
-                        # vwap_voliume_filter 
+                        # vwap_volume_filter
                         vwap = get_vwap(ohlc['highs'], ohlc['lows'], ohlc['closes'], ohlc['volumes'])
-                        vol_profile_check = last_vol > avg_vol # Условие активности объемов
-
-                         if price <= vwap or not vol_profile_check:
-                            logging.info("SKIP: No VWAP confirmation or volume")
-                            await asyncio.sleep(60)
-                            continue
+                        vol_profile_check = last_vol > avg_vol  # Условие активности объемов
 
                         # Фильтр ATR (анти-флэт)
                         atr = get_atr()
@@ -517,8 +524,8 @@ def run_bot():
                         funding_rate = deriv.get("funding_rate", 0.0)
 
                         # 6. СИГНАЛЫ НА ВХОД
-                        # Сигнал LONG: цена коснулась нижней полосы Боллинджера
-                        if price <= lower:
+                        # Сигнал LONG: отскок от нижней полосы Боллинджера ИЛИ подтвержденный импульс выше VWAP с объемом
+                        if (price <= lower) or (price > vwap and vol_profile_check and trend == "up" and price < upper):
                             if TREND_FILTER and trend == "down":
                                 logging.info("SKIP Long: downtrend")
                                 await asyncio.sleep(60)
@@ -545,12 +552,12 @@ def run_bot():
                             stats["daily_trades"] = stats.get("daily_trades", 0) + 1
                             save_state(stats)
 
-                            msg = f"🟢 *OPEN LONG*\nEntry: `${price:.2f}`\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`\nFunding: `{funding_rate*100:+.4f}%`"
+                            msg = f"🟢 *OPEN LONG*\nEntry: `${price:.2f}` | VWAP: `${vwap:.2f}`\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`\nFunding: `{funding_rate*100:+.4f}%`"
                             send_telegram(msg)
                             logging.info(f"[TRADE] OPEN LONG at {price:.2f}")
 
-                        # Сигнал SHORT: цена коснулась верхней полосы Боллинджера
-                        elif price >= upper:
+                        # Сигнал SHORT: отскок от верхней полосы Боллинджера ИЛИ подтвержденный импульс ниже VWAP с объемом
+                        elif (price >= upper) or (price < vwap and vol_profile_check and trend == "down" and price > lower):
                             if TREND_FILTER and trend == "up":
                                 logging.info("SKIP Short: uptrend")
                                 await asyncio.sleep(60)
@@ -577,7 +584,7 @@ def run_bot():
                             stats["daily_trades"] = stats.get("daily_trades", 0) + 1
                             save_state(stats)
 
-                            msg = f"🔴 *OPEN SHORT*\nEntry: `${price:.2f}`\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`\nFunding: `{funding_rate*100:+.4f}%`"
+                            msg = f"🔴 *OPEN SHORT*\nEntry: `${price:.2f}` | VWAP: `${vwap:.2f}`\nSL: `${sl:.2f}` | TP: `${tp:.2f}`\nVolume: `{volume:.4f}` | Trend: `{trend}`\nFunding: `{funding_rate*100:+.4f}%`"
                             send_telegram(msg)
                             logging.info(f"[TRADE] OPEN SHORT at {price:.2f}")
 
