@@ -286,7 +286,7 @@ async def stats_command(update: Update, context):
         funding_str = f"{deriv['funding_rate_pct']:+.4f}%" if deriv["status"] == "ok" else "N/A"
         oi_str = f"{deriv['open_interest']:,.0f} BTC" if deriv["status"] == "ok" else "N/A"
 
-        msg = f"""📊 *Stats {SYMBOL} v7.3.0.1*
+        msg = f"""📊 *Stats {SYMBOL} v7.3.1*
 
 💰 *Balance:* `${stats['paper_balance']:.2f}`
 📈 *Total Trades:* `{stats['total_trades']}`
