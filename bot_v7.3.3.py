@@ -35,6 +35,12 @@ TREND_FILTER = True     # фильтр тренда (EMA)
 COOLDOWN_HOURS = 4      # пауза после стопа (часы)
 MAX_TRADES_PER_DAY = 3  # лимит сделок в день
 
+# ---
+# --- ДЕРИВАТИВНЫЕ ДАННЫЕ ---
+
+bot = Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
+shutdown_event = None
+
 def get_derivatives_data(symbol="PF_XBTUSD"):
     """
     Получение Funding Rate и Open Interest с Kraken Futures (публичный API).
