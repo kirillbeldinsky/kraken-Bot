@@ -35,20 +35,46 @@ TREND_FILTER = True     # фильтр тренда (EMA)
 COOLDOWN_HOURS = 4      # пауза после стопа (часы)
 MAX_TRADES_PER_DAY = 3  # лимит сделок в день
 
-# --- ДЕРИВАТИВНЫЕ ФИЛЬТРЫ ---
-# Фандинг > +0.03%: рынок перегрет лонгами (опасность лонг-сквиза)
-MAX_FUNDING_LONG = 0.0003
-# Фандинг < -0.03%: рынок перегружен шортами (опасность шорт-сквиза)
-MIN_FUNDING_SHORT = -0.0003
+def get_derivatives_data(symbol="PF_XBTUSD"):
+    """
+    Получение Funding Rate и Open Interest с Kraken Futures (публичный API).
+    """
+    data = {
+        "funding_rate": 0.0,
+        "funding_rate_pct": 0.0,
+        "open_interest": 0.0,
+        "status": "ok"
+    }
+    try:
+        url = f"https://futures.kraken.com/derivatives/api/v3/tickers/{symbol}"
+        res = requests.get(url, timeout=5)
+        if res.status_code != 200:
+            logging.warning(f"Kraken Futures API HTTP {res.status_code}")
+            data["status"] = "error"
+            return data
 
-bot = Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
-shutdown_event = None
+        payload = res.json()
+        if payload.get("result") != "success":
+            logging.warning(f"Kraken Futures API error: {payload}")
+            data["status"] = "error"
+            return data
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+        ticker = payload.get("ticker", {})
+        # На Kraken Futures фандинг начисляется каждый час;
+        # умножаем на 8 для привычного 8-часового эквивалента под пороги ±0.03%
+        rate_1h = float(ticker.get("fundingRate", 0.0))
+        rate_8h = rate_1h * 8.0
+
+        data["funding_rate"] = rate_8h
+        data["funding_rate_pct"] = rate_8h * 100.0
+        data["open_interest"] = float(ticker.get("openInterest", 0.0))
+        return data
+
+    except Exception as e:
+        logging.warning(f"Derivatives API warning: {e}")
+        data["status"] = "error"
+        return data
+
 
 # --- СТЕЙТ ---
 def load_state():
