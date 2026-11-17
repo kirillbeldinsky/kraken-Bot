@@ -16,6 +16,7 @@ CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", 0))
 STATE_FILE = "bot_state.json"
 
 # --- НАСТРОЙКИ СИСТЕМЫ ---
+BOT_VERSION = "v7.3.3"
 SYMBOL = "BTC/USD"
 KRAKEN_SYMBOL = "XXBTZUSD"
 TIMEFRAME = 15          # 15 минут
@@ -28,19 +29,29 @@ STOP_LOSS_PCT = 0.015   # 1.5% стоп
 TAKE_PROFIT_PCT = 0.025 # 2.5% тейк (RR 1:1.67)
 FEE_PCT = 0.0026        # комиссия биржи
 
-# --- ФИЛЬТРЫ v7.3.0.1 ---
+# --- ФИЛЬТРЫ v7.3.3 ---
 MIN_VOLUME_FILTER = 8
 MIN_ATR_PCT = 0.00045   # порог волатильности (анти-флэт)
 TREND_FILTER = True     # фильтр тренда (EMA)
 COOLDOWN_HOURS = 4      # пауза после стопа (часы)
 MAX_TRADES_PER_DAY = 3  # лимит сделок в день
 
-# ---
-# --- ДЕРИВАТИВНЫЕ ДАННЫЕ ---
+# --- ДЕРИВАТИВНЫЕ ФИЛЬТРЫ ---
+# Фандинг > +0.03% (за 8ч): рынок перегрет лонгами (опасность лонг-сквиза)
+MAX_FUNDING_LONG = 0.0003
+# Фандинг < -0.03% (за 8ч): рынок перегружен шортами (опасность шорт-сквиза)
+MIN_FUNDING_SHORT = -0.0003
 
 bot = Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 shutdown_event = None
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+# --- ДЕРИВАТИВНЫЕ ДАННЫЕ (KRAKEN FUTURES PUBLIC API) ---
 def get_derivatives_data(symbol="PF_XBTUSD"):
     """
     Получение Funding Rate и Open Interest с Kraken Futures (публичный API).
@@ -66,9 +77,11 @@ def get_derivatives_data(symbol="PF_XBTUSD"):
             return data
 
         ticker = payload.get("ticker", {})
-        # На Kraken Futures фандинг начисляется каждый час;
-        # умножаем на 8 для привычного 8-часового эквивалента под пороги ±0.03%
-        rate_1h = float(ticker.get("fundingRate", 0.0))
+        mark_price = float(ticker.get("markPrice", 0.0))
+        raw_funding = float(ticker.get("fundingRate", 0.0))
+
+        # На PF_XBTUSD fundingRate задан в USD за 1 BTC в час -> переводим в долю и в 8ч-эквивалент
+        rate_1h = (raw_funding / mark_price) if mark_price > 0 else 0.0
         rate_8h = rate_1h * 8.0
 
         data["funding_rate"] = rate_8h
@@ -80,7 +93,6 @@ def get_derivatives_data(symbol="PF_XBTUSD"):
         logging.warning(f"Derivatives API warning: {e}")
         data["status"] = "error"
         return data
-
 
 # --- СТЕЙТ ---
 def load_state():
@@ -197,42 +209,6 @@ def get_ticker(symbol=KRAKEN_SYMBOL):
         logging.error(f"get_ticker error: {e}")
         return None
 
-# --- ДЕРИВАТИВНЫЕ ДАННЫЕ (BINANCE FUTURES PUBLIC API) ---
-def get_derivatives_data(symbol="BTCUSDT"):
-    """
-    Получение ставки финансирования (Funding Rate) и Открытого Интереса (Open Interest).
-    Используется публичный REST API Binance Futures (не требует API ключей).
-    """
-    data = {
-        "funding_rate": 0.0,
-        "funding_rate_pct": 0.0,
-        "open_interest": 0.0,
-        "status": "ok"
-    }
-    try:
-        # 1. Funding Rate
-        f_url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=1"
-        f_res = requests.get(f_url, timeout=5)
-        if f_res.status_code == 200:
-            f_json = f_res.json()
-            if f_json and isinstance(f_json, list):
-                rate = float(f_json[0].get("fundingRate", 0.0))
-                data["funding_rate"] = rate
-                data["funding_rate_pct"] = rate * 100.0
-
-        # 2. Open Interest
-        oi_url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}"
-        oi_res = requests.get(oi_url, timeout=5)
-        if oi_res.status_code == 200:
-            oi_json = oi_res.json()
-            data["open_interest"] = float(oi_json.get("openInterest", 0.0))
-
-        return data
-    except Exception as e:
-        logging.warning(f"Derivatives API warning: {e}")
-        data["status"] = "error"
-        return data
-
 # --- ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ ---
 def get_vwap(highs, lows, closes, volumes, periods=20):
     """
@@ -343,7 +319,7 @@ async def stats_command(update: Update, context):
         funding_str = f"{deriv['funding_rate_pct']:+.4f}%" if deriv["status"] == "ok" else "N/A"
         oi_str = f"{deriv['open_interest']:,.0f} BTC" if deriv["status"] == "ok" else "N/A"
 
-        msg = f"""📊 *Stats {SYMBOL} v7.3.3*
+        msg = f"""📊 *Stats {SYMBOL} {BOT_VERSION}*
 
 💰 *Balance:* `${stats['paper_balance']:.2f}`
 📈 *Total Trades:* `{stats['total_trades']}`
@@ -453,7 +429,7 @@ def run_bot():
             await app.start()
             logging.info("Bot updater polling started ✓")
             await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-            send_telegram(f"🚀 *Bot started v7.3.3 with VWAP & Derivatives* | Pair: `{SYMBOL}`")
+            send_telegram(f"🚀 *Bot started {BOT_VERSION} with VWAP & Derivatives* | Pair: `{SYMBOL}`")
 
             try:
                 while not shutdown_event.is_set():
@@ -467,7 +443,7 @@ def run_bot():
                             stats["daily_trades"] = 0
                             save_state(stats)
 
-                         # =====================================================
+                        # =====================================================
                         # 2. ПРОВЕРКА ОТКРЫТОЙ ПОЗИЦИИ (SL / TP)
                         # =====================================================
                         if stats.get("open_position"):
@@ -489,7 +465,7 @@ def run_bot():
                             if side == "buy":
                                 if bid <= pos["sl"]:
                                     close_reason = "SL"
-                                    exit_price = bid  # Реальная цена пробоя (учет проскальзывания)
+                                    exit_price = bid
                                 elif bid >= pos["tp"]:
                                     close_reason = "TP"
                                     exit_price = pos["tp"]
@@ -498,25 +474,22 @@ def run_bot():
                             elif side == "sell":
                                 if ask >= pos["sl"]:
                                     close_reason = "SL"
-                                    exit_price = ask  # Реальная цена пробоя (учет проскальзывания)
+                                    exit_price = ask
                                 elif ask <= pos["tp"]:
                                     close_reason = "TP"
                                     exit_price = pos["tp"]
 
                             # --- ИСПОЛНЕНИЕ ЗАКРЫТИЯ ---
                             if close_reason:
-                                # 1. Расчет грязного PnL
                                 if side == "buy":
                                     gross_pnl = (exit_price - entry) * vol
                                 else:
                                     gross_pnl = (entry - exit_price) * vol
 
-                                # 2. Честный расчет комиссии со всего оборота (вход + выход)
                                 total_turnover = (entry + exit_price) * vol
                                 fee = total_turnover * FEE_PCT
                                 net_pnl = gross_pnl - fee
 
-                                # 3. Обновление статистики
                                 stats["paper_balance"] += net_pnl
                                 stats["total_trades"] += 1
                                 if net_pnl > 0:
@@ -524,13 +497,11 @@ def run_bot():
                                 stats["total_pnl"] += net_pnl
                                 stats["open_position"] = None
 
-                                # Если выбило по SL — включаем кулдаун
                                 if close_reason == "SL":
                                     stats["last_stop_time"] = time.time()
 
                                 save_state(stats)
 
-                                # 4. Уведомление в Telegram
                                 icon = "🟢" if net_pnl > 0 else "🔴"
                                 side_str = "LONG" if side == "buy" else "SHORT"
                                 msg = (
@@ -544,7 +515,6 @@ def run_bot():
                                 logging.info(f"[TRADE] {close_reason} CLOSE {side_str} at {exit_price:.2f}, Net PnL: {net_pnl:.2f}")
                                 continue
 
-                            # Если позиция удерживается, спим 5 секунд до следующей проверки тикера
                             await asyncio.sleep(5)
                             continue
 
@@ -557,7 +527,7 @@ def run_bot():
                             await asyncio.sleep(60)
                             continue
 
-                       # 4. ПОЛУЧЕНИЕ РЫНОЧНЫХ ДАННЫХ
+                        # 4. ПОЛУЧЕНИЕ РЫНОЧНЫХ ДАННЫХ
                         ticker = get_ticker()
                         if not ticker:
                             await asyncio.sleep(30)
@@ -569,7 +539,7 @@ def run_bot():
                             await asyncio.sleep(30)
                             continue
 
-                        upper, ma, lower, avg_vol, last_vol = get_bb()
+                        upper, ma, lower, avg_vol, last_vol = get_bb(ohlc)
                         if upper == 0:
                             await asyncio.sleep(30)
                             continue
@@ -582,46 +552,46 @@ def run_bot():
 
                         # vwap_volume_filter
                         vwap = get_vwap(ohlc['highs'], ohlc['lows'], ohlc['closes'], ohlc['volumes'])
-                        vol_profile_check = last_vol > avg_vol  # Условие активности объемов
+                        vol_profile_check = last_vol > avg_vol
 
                         # Фильтр ATR (анти-флэт)
-                        atr = get_atr()
+                        atr = get_atr(ohlc)
                         if atr == 0 or (atr / price) < MIN_ATR_PCT:
                             logging.info("SKIP: ATR too low (flat market)")
                             await asyncio.sleep(60)
                             continue
 
                         # Трендовые фильтры (локальный 15m и глобальный 1h)
-                        trend = get_trend()
-                        mtf_trend = get_trend_mtf(interval=60)  # <-- ИСПРАВЛЕНИЕ: объявление переменной
+                        trend = get_trend(ohlc)
+                        mtf_trend = get_trend_mtf(interval=60)
 
                         # 5. ДЕРИВАТИВНЫЙ ФИЛЬТР (Funding Rate & Open Interest)
                         deriv = get_derivatives_data()
                         funding_rate = deriv.get("funding_rate", 0.0)
 
-                       # =====================================================
-                        # 6. СИГНАЛЫ НА ВХОД (LONG)
                         # =====================================================
-                        
-                        # Базовые фильтры активности свечи 15m
+                        # 6. СИГНАЛЫ НА ВХОД (LONG / SHORT)
+                        # =====================================================
                         vol_ok = last_vol >= avg_vol * 0.55
                         atr_ok = atr > 0 and (atr / price) >= MIN_ATR_PCT
 
-                        # 1. Условия триггеров:
-                        # А) Отскок от нижней полосы Боллинджера (при подтвержденном объеме и волатильности)
                         bounce_signal = (price <= lower) and vol_ok and atr_ok
-
-                        # Б) Подтвержденный импульс выше VWAP по локальному аптренду (внутри канала)
                         breakout_signal = (
-                            price > vwap 
-                            and vol_profile_check 
-                            and trend == "up" 
+                            price > vwap
+                            and vol_profile_check
+                            and trend == "up"
                             and price < upper
                         )
 
-                        # 2. Проверка входа:
+                        bounce_short_signal = (price >= upper) and vol_ok and atr_ok
+                        breakdown_short_signal = (
+                            price < vwap
+                            and vol_profile_check
+                            and trend == "down"
+                            and price > lower
+                        )
+
                         if bounce_signal or breakout_signal:
-                            # 1) Защита от торговли против тренда (локального 15m или старшего 1h)
                             if TREND_FILTER and (trend == "down" or mtf_trend == "down"):
                                 logging.info(
                                     f"SKIP Long: downtrend active (15m: {trend}, 1h: {mtf_trend})"
@@ -629,7 +599,6 @@ def run_bot():
                                 await asyncio.sleep(60)
                                 continue
 
-                            # 2) Защита от перегрева по ставке финансирования Binance
                             if funding_rate > MAX_FUNDING_LONG:
                                 logging.info(
                                     f"SKIP Long: funding too high ({funding_rate * 100:.4f}% > {MAX_FUNDING_LONG * 100:.2f}%)"
@@ -637,7 +606,6 @@ def run_bot():
                                 await asyncio.sleep(60)
                                 continue
 
-                            # 3) Расчет позиции и риск-менеджмент
                             risk_amount = stats["paper_balance"] * RISK_PCT
                             sl = price * (1 - STOP_LOSS_PCT)
                             tp = price * (1 + TAKE_PROFIT_PCT)
@@ -664,25 +632,7 @@ def run_bot():
                             send_telegram(msg)
                             logging.info(f"[TRADE] OPEN LONG ({signal_type}) at {price:.2f}")
 
-# =====================================================
-                        # 6. СИГНАЛЫ НА ВХОД (SHORT)
-                        # =====================================================
-                        
-                        # 1. Условия триггеров:
-                        # А) Отскок от верхней полосы Боллинджера (при подтвержденном объеме и волатильности)
-                        bounce_short_signal = (price >= upper) and vol_ok and atr_ok
-
-                        # Б) Подтвержденный импульс ниже VWAP по локальному даунтренду (внутри канала)
-                        breakdown_short_signal = (
-                            price < vwap 
-                            and vol_profile_check 
-                            and trend == "down" 
-                            and price > lower
-                        )
-
-                        # 2. Проверка входа:
-                        if bounce_short_signal or breakdown_short_signal:
-                            # 1) Защита от торговли против восходящего тренда (15m или 1h)
+                        elif bounce_short_signal or breakdown_short_signal:
                             if TREND_FILTER and (trend == "up" or mtf_trend == "up"):
                                 logging.info(
                                     f"SKIP Short: uptrend active (15m: {trend}, 1h: {mtf_trend})"
@@ -690,7 +640,6 @@ def run_bot():
                                 await asyncio.sleep(60)
                                 continue
 
-                            # 2) Защита от шорт-сквиза при отрицательном фандинге (перегруз шортов)
                             if funding_rate < MIN_FUNDING_SHORT:
                                 logging.info(
                                     f"SKIP Short: funding too low ({funding_rate * 100:.4f}% < {MIN_FUNDING_SHORT * 100:.2f}%)"
@@ -698,11 +647,10 @@ def run_bot():
                                 await asyncio.sleep(60)
                                 continue
 
-                            # 3) Расчет позиции и риск-менеджмент для SHORT
                             risk_amount = stats["paper_balance"] * RISK_PCT
-                            sl = price * (1 + STOP_LOSS_PCT)  # Стоп-лосс ВЫШЕ цены входа
-                            tp = price * (1 - TAKE_PROFIT_PCT)  # Тейк-профит НИЖЕ цены входа
-                            volume = risk_amount / (sl - price)  # Делитель (sl - price) > 0
+                            sl = price * (1 + STOP_LOSS_PCT)
+                            tp = price * (1 - TAKE_PROFIT_PCT)
+                            volume = risk_amount / (sl - price)
 
                             stats["open_position"] = {
                                 "side": "sell",
