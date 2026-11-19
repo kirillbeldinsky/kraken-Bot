@@ -21,7 +21,7 @@ COOLDOWN_BARS = 16
 MAX_TRADES_PER_DAY = 3
 MAX_CONSECUTIVE_STOPS = 2       # Daily Circuit Breaker: 2 стопа подряд
 MAX_DAILY_LOSS_PCT = 0.02       # Daily Circuit Breaker: -2% за день
-LIMIT_FILL_SLIPPAGE = 0.0002    # Буфер 0.02% для исполнения post-only лимитки
+LIMIT_FILL_SLIPPAGE = 0.0    # Постановка лимитки точно по лучшему bid/ask
 STATE_FILE = "bot_state.json"
 CACHE_CSV = "candles_30d.csv"
 
