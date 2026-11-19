@@ -33,14 +33,9 @@ def load_bot_state(state_path: str = STATE_FILE) -> dict:
 
 
 def fetch_30d_ohlc(days: int = 30, interval_min: int = 15) -> pd.DataFrame:
-    """
-    Загружает ~30 дней 15-минутных свечей (2880 баров) с пагинацией по времени.
-    Использует публичный API Binance (или fallback на Kraken 720 баров).
-    """
     total_bars = days * 24 * (60 // interval_min)
     end_ms = int(time.time() * 1000)
     step_ms = interval_min * 60 * 1000
-    all_rows = []
 
     endpoints = [
         "https://api.binance.com/api/v3/klines",
@@ -76,12 +71,10 @@ def fetch_30d_ohlc(days: int = 30, interval_min: int = 15) -> pd.DataFrame:
                     "close": [float(c[4]) for c in all_rows],
                     "volume": [float(c[5]) for c in all_rows],
                 })
-                df = df.drop_duplicates(subset=["time"]).sort_values("time").reset_index(drop=True)
-                return df
+                return df.drop_duplicates(subset=["time"]).sort_values("time").reset_index(drop=True)
         except Exception as e:
             print(f"[INFO] Endpoint {base_url} unavailable ({e}), trying fallback...")
 
-    # Fallback на Kraken (последние 720 свечей)
     url = f"https://api.kraken.com/0/public/OHLC?pair={KRAKEN_SYMBOL}&interval={interval_min}"
     r = requests.get(url, timeout=15)
     r.raise_for_status()
@@ -103,7 +96,7 @@ def prepare_indicators(df: pd.DataFrame, state_path: str = STATE_FILE) -> pd.Dat
     df = df.dropna(subset=["open", "high", "low", "close", "volume"]).copy()
     df = df[(df["close"] > 0) & (df["high"] >= df["low"]) & (df["volume"] >= 0)].reset_index(drop=True)
 
-    # Расчёт скользящих индикаторов строго назад (rolling без lookahead bias)
+    # 15m индикаторы (строго rolling назад)
     df["ma20"] = df["close"].rolling(20).mean()
     df["std20"] = df["close"].rolling(20).std(ddof=0)
     df["avg_vol"] = df["volume"].rolling(20).mean()
@@ -121,18 +114,41 @@ def prepare_indicators(df: pd.DataFrame, state_path: str = STATE_FILE) -> pd.Dat
     ], axis=1).max(axis=1)
     df["atr"] = tr.rolling(ATR_PERIOD).mean()
 
+    # Старший таймфрейм 1H без lookahead bias (используем только закрытые 1H свечи)
+    df_1h = (
+        df.set_index("time")[["close"]]
+        .resample("1h")
+        .last()
+        .dropna()
+    )
+    df_1h["sma20_1h"] = df_1h["close"].rolling(20).mean()
+    df_1h["sma50_1h"] = df_1h["close"].rolling(50).mean()
+    df_1h["trend_1h"] = np.where(
+        df_1h["sma20_1h"] < df_1h["sma50_1h"] * 0.997,
+        "down",
+        np.where(df_1h["sma20_1h"] > df_1h["sma50_1h"] * 1.003, "up", "range"),
+    )
+    # Сдвиг на 1 час вперёд: внутри часа H доступна только закрытая свеча часа H-1
+    df_1h["trend_1h_closed"] = df_1h["trend_1h"].shift(1).fillna("range")
+
+    df["hour_floor"] = df["time"].dt.floor("1h")
+    trend_map = df_1h["trend_1h_closed"].to_dict()
+    df["trend_1h"] = df["hour_floor"].map(trend_map).fillna("range")
+    df = df.drop(columns=["hour_floor"])
+
     df.attrs["bot_state"] = load_bot_state(state_path)
     return df
 
 
 def run_bot_strategy_window(
     df: pd.DataFrame,
-    num_std: float = 2.0,
+    num_std: float = 2.2,
     atr_mult: float = ATR_MULTIPLIER,
     tp_pct: float = TAKE_PROFIT_PCT,
     fee_pct: float = FEE_PCT,
     start_balance: float = 1000.0,
     carry_pos: dict | None = None,
+    use_mtf_1h: bool = True,
 ) -> dict:
     if len(df) < 5:
         return {
@@ -217,6 +233,8 @@ def run_bot_strategy_window(
         else:
             trend = "range"
 
+        mtf_trend = prev["trend_1h"] if use_mtf_1h else "range"
+
         vol_spike = prev["volume"] > prev["avg_vol"]
         entry_price = float(bar["open"])
         sl_dist = float(prev["atr"]) * atr_mult
@@ -230,7 +248,11 @@ def run_bot_strategy_window(
             prev["close"] < prev["vwap"] and vol_spike and trend == "down" and prev["close"] > prev["lower"]
         )
 
-        if long_cond and not (TREND_FILTER and trend == "down"):
+        # Жёсткая синхронизация 15m входа со старшим трендом 1H
+        long_blocked = (TREND_FILTER and trend == "down") or (use_mtf_1h and mtf_trend == "down")
+        short_blocked = (TREND_FILTER and trend == "up") or (use_mtf_1h and mtf_trend == "up")
+
+        if long_cond and not long_blocked:
             raw_qty = (balance * RISK_PCT) / sl_dist
             max_qty = (balance * MAX_LEVERAGE) / entry_price
             qty = min(raw_qty, max_qty)
@@ -242,7 +264,7 @@ def run_bot_strategy_window(
                 "qty": qty,
             }
             daily_counts[day_key] += 1
-        elif short_cond and not (TREND_FILTER and trend == "up"):
+        elif short_cond and not short_blocked:
             raw_qty = (balance * RISK_PCT) / sl_dist
             max_qty = (balance * MAX_LEVERAGE) / entry_price
             qty = min(raw_qty, max_qty)
@@ -271,12 +293,12 @@ def walk_forward_bot(
     train_bars: int = 960,
     test_bars: int = 480,
     fee_pct: float = FEE_PCT,
+    use_mtf_1h: bool = True,
 ) -> pd.DataFrame:
     candidates = [
-        (2.0, 1.2),
         (2.0, 1.5),
-        (2.0, 1.8),
         (2.2, 1.5),
+        (2.2, 1.8),
     ]
     rows = []
     oos_balance = 1000.0
@@ -286,10 +308,16 @@ def walk_forward_bot(
         train_df = df.iloc[start : start + train_bars]
         test_df = df.iloc[start + train_bars : start + train_bars + test_bars]
 
-        best_cfg = (2.0, 1.5)
+        best_cfg = (2.2, 1.5)
         best_train_ret = -np.inf
         for std_k, atr_m in candidates:
-            res_tr = run_bot_strategy_window(train_df, num_std=std_k, atr_mult=atr_m, fee_pct=fee_pct)
+            res_tr = run_bot_strategy_window(
+                train_df,
+                num_std=std_k,
+                atr_mult=atr_m,
+                fee_pct=fee_pct,
+                use_mtf_1h=use_mtf_1h,
+            )
             if res_tr["return_pct"] > best_train_ret:
                 best_train_ret = res_tr["return_pct"]
                 best_cfg = (std_k, atr_m)
@@ -302,6 +330,7 @@ def walk_forward_bot(
             fee_pct=fee_pct,
             start_balance=oos_balance,
             carry_pos=oos_open_pos,
+            use_mtf_1h=use_mtf_1h,
         )
         oos_balance = res_oos["end_balance"]
         oos_open_pos = res_oos["open_pos"]
@@ -323,28 +352,25 @@ def walk_forward_bot(
 
 
 if __name__ == "__main__":
-    raw_df = fetch_30d_ohlc(days=30, interval_min=TIMEFRAME)
-    raw_df.to_csv(CACHE_CSV, index=False)
-    df_candles = prepare_indicators(raw_df, state_path=STATE_FILE)
+    if os.path.exists(CACHE_CSV):
+        raw_df = pd.read_csv(CACHE_CSV)
+        raw_df["time"] = pd.to_datetime(raw_df["time"])
+    else:
+        raw_df = fetch_30d_ohlc(days=30, interval_min=TIMEFRAME)
+        raw_df.to_csv(CACHE_CSV, index=False)
 
+    df_candles = prepare_indicators(raw_df, state_path=STATE_FILE)
     state = df_candles.attrs.get("bot_state", {})
     TAKE_PROFIT_PCT = float(state.get("dynamic_tp_pct", TAKE_PROFIT_PCT))
 
-    t_start = df_candles["time"].iloc[0]
-    t_end = df_candles["time"].iloc[-1]
-    print(f"Loaded candles: {len(df_candles)} ({t_start} -> {t_end}) | TP={TAKE_PROFIT_PCT*100:.2f}%")
-    print(
-        f"JSON ({STATE_FILE}): balance=${state.get('paper_balance', 0):.2f} | "
-        f"trades={state.get('total_trades', 0)} | wins={state.get('total_wins', 0)} | "
-        f"PnL=${state.get('total_pnl', 0):.2f}"
-    )
+    print(f"Loaded candles: {len(df_candles)} | TP={TAKE_PROFIT_PCT*100:.2f}% | Fee={FEE_PCT*100:.2f}% x2")
 
-    # Адаптивный выбор размеров окон под длину загруженной истории
-    if len(df_candles) >= 2000:
-        tr_b, te_b = 960, 480   # 10 дней train / 5 дней test
-    else:
-        tr_b, te_b = 240, 96    # fallback для 720 баров
+    tr_b, te_b = (960, 480) if len(df_candles) >= 2000 else (240, 96)
 
-    wf_report = walk_forward_bot(df_candles, train_bars=tr_b, test_bars=te_b, fee_pct=FEE_PCT)
-    print("\n--- WALK-FORWARD 30D REPORT (v3) ---")
-    print(wf_report.to_string(index=False))
+    rep_base = walk_forward_bot(df_candles, train_bars=tr_b, test_bars=te_b, fee_pct=FEE_PCT, use_mtf_1h=False)
+    print("\n--- 1. BASELINE (MTF 1H = OFF) ---")
+    print(rep_base.to_string(index=False))
+
+    rep_mtf = walk_forward_bot(df_candles, train_bars=tr_b, test_bars=te_b, fee_pct=FEE_PCT, use_mtf_1h=True)
+    print("\n--- 2. WITH SENIOR TREND FILTER (MTF 1H = ON) ---")
+    print(rep_mtf.to_string(index=False))
