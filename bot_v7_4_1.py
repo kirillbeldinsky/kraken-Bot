@@ -37,7 +37,7 @@ TAKE_PROFIT_PCT = 0.015         # 1.5% тейк-профит
 FEE_MAKER = 0.0016              # 0.16% Maker (лимитный вход и TP)
 FEE_TAKER = 0.0026              # 0.26% Taker (рыночный SL)
 LIMIT_ORDER_TTL_SEC = 300       # 5 минут жизни неисполненного лимитного ордера
-LIMIT_PRICE_OFFSET = 0.0001     # 0.01% отступ вглубь стакана для гарантированного post-only
+LIMIT_PRICE_OFFSET = 0.0        # Постановка точно по лучшему bid / ask стакана
 
 # --- ФИЛЬТРЫ И ЗАЩИТА (DAILY CIRCUIT BREAKER) ---
 MIN_ATR_PCT = 0.00045           # анти-флэт порог
