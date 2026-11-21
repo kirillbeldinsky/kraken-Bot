@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import copy
 import os
 import time
 import uuid
@@ -71,6 +72,9 @@ def default_state() -> dict:
         "paper_balance": PAPER_BALANCE_START,
         "total_trades": 0,
         "total_wins": 0,
+        "total_losses": 0,
+        "total_longs": 0,
+        "total_shorts": 0,
         "total_pnl": 0.0,
         "open_position": None,
         "pending_order": None,
@@ -78,10 +82,32 @@ def default_state() -> dict:
         "daily_trades": 0,
         "daily_pnl": 0.0,
         "daily_stop_streak": 0,
+        "daily_loss_r": 0.0,
         "missed_limit_orders": 0,
         "blocked_impulse_signals": 0,
         "last_day": str(date.today()),
     }
+
+
+def audit_state(state: dict, origin: str = "") -> None:
+    """Проверяет согласованность счётчиков и пишет диагностику в лог."""
+    trades = int(state.get("total_trades", 0) or 0)
+    longs = int(state.get("total_longs", 0) or 0)
+    shorts = int(state.get("total_shorts", 0) or 0)
+    side_sum = longs + shorts
+
+    logging.debug(
+        f"[STATE AUDIT{f' @ {origin}' if origin else ''}] "
+        f"trades={trades}, longs={longs}, shorts={shorts}, longs+shorts={side_sum}, "
+        f"open_pos={state.get('open_position')!r}, last_day={state.get('last_day')!r}"
+    )
+
+    if side_sum != trades:
+        logging.warning(
+            f"[STATE MISMATCH{f' @ {origin}' if origin else ''}] "
+            f"total_longs ({longs}) + total_shorts ({shorts}) = {side_sum}, "
+            f"а total_trades = {trades} (разница: {trades - side_sum})"
+        )
 
 
 def load_state() -> dict:
@@ -90,21 +116,58 @@ def load_state() -> dict:
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-                if isinstance(saved, dict):
-                    state.update(saved)
+            if isinstance(saved, dict):
+                loaded_snapshot = copy.deepcopy(saved)
+                state.update(saved)
+                logging.info(
+                    f"[LOAD_STATE] Загружен {STATE_FILE}: "
+                    f"trades={loaded_snapshot.get('total_trades')}, "
+                    f"longs={loaded_snapshot.get('total_longs')}, "
+                    f"shorts={loaded_snapshot.get('total_shorts')}"
+                )
+            else:
+                logging.warning(f"[LOAD_STATE] В {STATE_FILE} не dict, а {type(saved).__name__}")
         except Exception as e:
-            logging.error(f"Error reading state file: {e}")
+            logging.error(f"[LOAD_STATE] Error reading state file: {e}")
+    else:
+        logging.info(f"[LOAD_STATE] Файл {STATE_FILE} не найден, стартуем с default_state()")
+
+    audit_state(state, origin="after_load_state")
     return state
 
 
 def save_state(state: dict) -> None:
     try:
+        if not isinstance(state, dict):
+            logging.error(f"[SAVE_STATE] Ожидался dict, получен {type(state).__name__}: {state!r}")
+            return
+
+        # Аудит счётчиков до записи на диск
+        audit_state(state, origin="before_save_state")
+
+        # Страховка: если ключи лонгов/шортов случайно удалили или затёрли None
+        if state.get("total_longs") is None:
+            logging.warning("[SAVE_STATE] total_longs был None — привожу к 0")
+            state["total_longs"] = 0
+        if state.get("total_shorts") is None:
+            logging.warning("[SAVE_STATE] total_shorts был None — привожу к 0")
+            state["total_shorts"] = 0
+
+        logging.debug(
+            f"[SAVE_STATE] Пишу {STATE_FILE} | "
+            f"balance={state.get('paper_balance')} | "
+            f"trades={state.get('total_trades')} | "
+            f"longs={state.get('total_longs')} | "
+            f"shorts={state.get('total_shorts')} | "
+            f"open_pos={state.get('open_position')!r}"
+        )
+
         tmp_file = f"{STATE_FILE}.tmp"
         with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+            json.dump(state, f, indent=2, ensure_ascii=False)
         os.replace(tmp_file, STATE_FILE)
     except Exception as e:
-        logging.error(f"Error saving state: {e}")
+        logging.error(f"[SAVE_STATE] Error saving state: {e}")
 
 
 # --- TELEGRAM ---
@@ -483,40 +546,70 @@ def run_bot():
                             pos = stats["open_position"]
                             ohlc = get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, limit=2)
                             if not ohlc or len(ohlc["times"]) < 2:
+                                logging.debug("[DEBUG EXIT] Недостаточно OHLC данных, жду 5с")
                                 await asyncio.sleep(5)
                                 continue
-
+                        
                             last_closed_time = ohlc["times"][-2]
                             if pos.get("checked_candle_time") != last_closed_time:
                                 pos["checked_candle_time"] = last_closed_time
                                 prev_high = ohlc["highs"][-2]
                                 prev_low = ohlc["lows"][-2]
-
+                        
+                                raw_side = pos.get("side")
+                                side_norm = str(raw_side).strip().lower() if raw_side is not None else ""
+                        
+                                logging.debug(
+                                    f"[DEBUG EXIT] Свеча {last_closed_time} | side={raw_side!r} ({side_norm}) | "
+                                    f"entry={pos.get('entry')} | sl={pos.get('sl')} | tp={pos.get('tp')} | "
+                                    f"prev_low={prev_low} | prev_high={prev_high}"
+                                )
+                        
                                 exit_triggered = False
                                 exit_reason = ""
                                 exit_price = 0.0
                                 is_stop = False
-
-                                if pos["side"] == "buy":
+                        
+                                if side_norm in ("buy", "long"):
                                     if prev_low <= pos["sl"]:
                                         exit_triggered, exit_reason, exit_price, is_stop = True, "SL CLOSE (LONG)", pos["sl"], True
                                     elif prev_high >= pos["tp"]:
-                                        exit_triggered, exit_reason, exit_price = True, "TP CLOSE (LONG)", pos["tp"]
-                                elif pos["side"] == "sell":
+                                        exit_triggered, exit_reason, exit_price = True, "TP CLOSE (LONG)", pos["tp"], False
+                                elif side_norm in ("sell", "short"):
                                     if prev_high >= pos["sl"]:
                                         exit_triggered, exit_reason, exit_price, is_stop = True, "SL CLOSE (SHORT)", pos["sl"], True
                                     elif prev_low <= pos["tp"]:
-                                        exit_triggered, exit_reason, exit_price = True, "TP CLOSE (SHORT)", pos["tp"]
-
+                                        exit_triggered, exit_reason, exit_price = True, "TP CLOSE (SHORT)", pos["tp"], False
+                                else:
+                                    logging.warning(f"[DEBUG EXIT] Неожиданное значение pos['side']: {raw_side!r}")
+                        
                                 if exit_triggered:
                                     exit_fee = FEE_TAKER if is_stop else FEE_MAKER
                                     final_pnl = calc_net_pnl(pos["side"], pos["entry"], exit_price, pos["volume"], exit_fee)
+                        
+                                    # Учёт лонгов и шортов при закрытии сделки
+                                    before_longs = int(stats.get("total_longs", 0) or 0)
+                                    before_shorts = int(stats.get("total_shorts", 0) or 0)
+                                    before_trades = int(stats.get("total_trades", 0) or 0)
+                        
+                                    if side_norm in ("buy", "long"):
+                                        stats["total_longs"] = before_longs + 1
+                                        stats["daily_longs"] = int(stats.get("daily_longs", 0) or 0) + 1
+                                    elif side_norm in ("sell", "short"):
+                                        stats["total_shorts"] = before_shorts + 1
+                                        stats["daily_shorts"] = int(stats.get("daily_shorts", 0) or 0) + 1
+                                    else:
+                                        logging.error(
+                                            f"[DEBUG SIDE] Сделка закрыта, но side={raw_side!r} не распознан как long/short! "
+                                            f"total_longs и total_shorts не изменены."
+                                        )
+                        
                                     stats["paper_balance"] += final_pnl
-                                    stats["total_trades"] += 1
+                                    stats["total_trades"] = before_trades + 1
                                     stats["total_wins"] += 1 if final_pnl > 0 else 0
                                     stats["total_pnl"] += final_pnl
                                     stats["daily_pnl"] = stats.get("daily_pnl", 0.0) + final_pnl
-
+                        
                                     if is_stop:
                                         stats["last_stop_time"] = time.time()
                                         stats["daily_stop_streak"] = stats.get("daily_stop_streak", 0) + 1
@@ -524,10 +617,17 @@ def run_bot():
                                     else:
                                         stats["daily_stop_streak"] = 0
                                         badge = "🟢"
-
+                        
+                                    logging.info(
+                                        f"[DEBUG CLOSED] {exit_reason} | side={raw_side!r} | pnl={final_pnl:+.4f} | "
+                                        f"trades: {before_trades}->{stats['total_trades']} | "
+                                        f"longs: {before_longs}->{stats.get('total_longs')} | "
+                                        f"shorts: {before_shorts}->{stats.get('total_shorts')}"
+                                    )
+                        
                                     stats["open_position"] = None
                                     save_state(stats)
-
+                        
                                     wr = (stats["total_wins"] / stats["total_trades"] * 100) if stats["total_trades"] else 0.0
                                     send_telegram(
                                         f"{badge} *{exit_reason}*\n"
@@ -535,9 +635,9 @@ def run_bot():
                                         f"Balance: `${stats['paper_balance']:.2f}` | WR: `{wr:.1f}%`"
                                     )
                                     continue
-
+                        
                                 save_state(stats)
-
+                        
                             await asyncio.sleep(15)
                             continue
 
