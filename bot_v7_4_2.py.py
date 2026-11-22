@@ -1,0 +1,542 @@
+import asyncio
+import json
+import logging
+import os
+import time
+import uuid
+from datetime import date
+import requests
+from dotenv import load_dotenv
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler
+
+# --- CONFIG ---
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", 0))
+STATE_FILE = "bot_state.json"
+
+# --- НАСТРОЙКИ СИСТЕМЫ (v7.4.2-ANTI-IMPULSE) ---
+VERSION = "v7.4.2-ANTI-IMPULSE"
+SYMBOL = "BTC/USD"
+KRAKEN_SYMBOL = "XXBTZUSD"
+TIMEFRAME = 15                  # 15 минут
+LIMIT = 100
+PAPER_BALANCE_START = 1000.0
+
+# --- РИСК И ПАРАМЕТРЫ СТРАТЕГИИ ---
+RISK_PCT = 0.01                 # 1% риска на сделку
+MAX_LEVERAGE = 1.0              # без кредитного плеча
+BB_PERIOD = 20
+BB_STD = 2.2                    # откалибровано в WFO
+ATR_PERIOD = 14
+ATR_MULTIPLIER = 1.8            # адаптивный стоп = 1.8 * ATR (проверено в WFO vs 1.5)
+TAKE_PROFIT_PCT = 0.015         # 1.5% тейк-профит
+
+# --- КОМИССИИ И ЛИМИТНЫЕ ОРДЕРА (KRAKEN POST-ONLY) ---
+FEE_MAKER = 0.0016              # 0.16% Maker (лимитный вход и TP)
+FEE_TAKER = 0.0026              # 0.26% Taker (рыночный SL)
+LIMIT_ORDER_TTL_SEC = 300       # 5 минут жизни неисполненного лимитного ордера
+LIMIT_PRICE_OFFSET = 0.0        # Постановка точно по лучшему bid / ask стакана
+
+# --- ФИЛЬТРЫ И ЗАЩИТА (DAILY + CROSS-DAY CIRCUIT BREAKER) ---
+MIN_ATR_PCT = 0.00045           # анти-флэт порог
+TREND_FILTER = True             # фильтр тренда SMA20/SMA50
+COOLDOWN_HOURS = 4              # пауза после стопа (часы)
+MAX_TRADES_PER_DAY = 3          # максимум сделок в сутки
+MAX_CONSECUTIVE_STOPS = 2       # стоп-кран после 2 стопов подряд за день
+MAX_CROSS_DAY_STOPS = 3         # сквозной стоп-кран после 3 стопов подряд на стыке дней
+CROSS_DAY_CB_HOURS = 12         # авто-разблокировка сквозного стоп-крана через 12 часов
+MAX_DAILY_LOSS_PCT = 0.02       # стоп-кран при дневной просадке -2.0%
+
+# --- ФИЛЬТР РАСШИРЕНИЯ ВОЛАТИЛЬНОСТИ (АНТИ-ИМПУЛЬС) ---
+BB_EXPANSION_MAX = 1.35         # ширина BB не превышает среднюю за 10 свечей более чем на 35%
+IMPULSE_BAR_ATR_MAX = 2.2       # размах последней закрытой свечи <= 2.2 * ATR
+
+# --- ДЕРИВАТИВНЫЕ ФИЛЬТРЫ (BINANCE FUTURES) ---
+MAX_FUNDING_LONG = 0.0003
+MIN_FUNDING_SHORT = -0.0003
+
+bot = Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
+shutdown_event = None
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("bot.log", encoding="utf-8"),
+    ],
+)
+
+
+# --- СТЕЙТ ---
+def default_state() -> dict:
+    return {
+        "paper_balance": PAPER_BALANCE_START,
+        "total_trades": 0,
+        "total_wins": 0,
+        "total_pnl": 0.0,
+        "open_position": None,
+        "pending_order": None,
+        "last_stop_time": 0,
+        "last_exit_price": None,
+        "last_exit_time": 0,
+        "daily_trades": 0,
+        "daily_pnl": 0.0,
+        "daily_stop_streak": 0,
+        "consecutive_stops": 0,
+        "missed_limit_orders": 0,
+        "blocked_impulse_signals": 0,
+        "last_day": str(date.today()),
+    }
+
+
+def load_state() -> dict:
+    state = default_state()
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                if isinstance(saved, dict):
+                    state.update(saved)
+        except Exception as e:
+            logging.error(f"Error reading state file: {e}")
+    return state
+
+
+def save_state(state: dict) -> None:
+    try:
+        tmp_file = f"{STATE_FILE}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_file, STATE_FILE)
+    except Exception as e:
+        logging.error(f"Error saving state: {e}")
+
+
+# --- TELEGRAM ---
+async def send_telegram_async(text: str) -> None:
+    if not bot or not CHAT_ID:
+        return
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Telegram send error: {e}")
+
+
+def send_telegram(text: str) -> None:
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(send_telegram_async(text))
+        else:
+            asyncio.run(send_telegram_async(text))
+    except Exception as e:
+        logging.error(f"send_telegram wrapper error: {e}")
+
+
+# --- KRAKEN & BINANCE PUBLIC API ---
+def get_ohlc(symbol: str = KRAKEN_SYMBOL, interval: int = TIMEFRAME, limit: int = LIMIT) -> dict | None:
+    try:
+        url = f"https://api.kraken.com/0/public/OHLC?pair={symbol}&interval={interval}"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if data.get("error"):
+            logging.error(f"Kraken API error: {data['error']}")
+            return None
+        result = data.get("result", {})
+        pair_key = next((k for k in result.keys() if k != "last"), None)
+        if not pair_key or not result.get(pair_key):
+            return None
+        ohlc_data = result[pair_key][-limit:]
+        return {
+            "times": [int(c[0]) for c in ohlc_data],
+            "opens": [float(c[1]) for c in ohlc_data],
+            "highs": [float(c[2]) for c in ohlc_data],
+            "lows": [float(c[3]) for c in ohlc_data],
+            "closes": [float(c[4]) for c in ohlc_data],
+            "volumes": [float(c[6]) for c in ohlc_data],
+        }
+    except Exception as e:
+        logging.error(f"Error fetching OHLC data: {e}")
+        return None
+
+
+def get_ticker(symbol: str = KRAKEN_SYMBOL) -> dict | None:
+    try:
+        resp = requests.get(f"https://api.kraken.com/0/public/Ticker?pair={symbol}", timeout=10)
+        resp.raise_for_status()
+        result = resp.json().get("result", {})
+        pair_key = next((k for k in result.keys()), None)
+        if not pair_key:
+            return None
+        ticker = result[pair_key]
+        return {
+            "bid": float(ticker["b"][0]),
+            "ask": float(ticker["a"][0]),
+            "last": float(ticker["c"][0]),
+        }
+    except Exception as e:
+        logging.error(f"get_ticker error: {e}")
+        return None
+
+
+def get_derivatives_data(symbol: str = "BTCUSDT") -> dict:
+    data = {"funding_rate": 0.0, "funding_rate_pct": 0.0, "open_interest": 0.0, "status": "ok"}
+    try:
+        f_res = requests.get(f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=1", timeout=5)
+        if f_res.status_code == 200:
+            f_json = f_res.json()
+            if f_json and isinstance(f_json, list):
+                rate = float(f_json[0].get("fundingRate", 0.0))
+                data["funding_rate"] = rate
+                data["funding_rate_pct"] = rate * 100.0
+        oi_res = requests.get(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}", timeout=5)
+        if oi_res.status_code == 200:
+            data["open_interest"] = float(oi_res.json().get("openInterest", 0.0))
+        return data
+    except Exception as e:
+        logging.warning(f"Derivatives API warning: {e}")
+        data["status"] = "error"
+        return data
+
+
+# --- ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ ---
+def get_vwap(data: dict, periods: int = 20) -> float:
+    if not data or len(data["closes"]) < periods:
+        return 0.0
+    h_s, l_s, c_s, v_s = data["highs"][-periods:], data["lows"][-periods:], data["closes"][-periods:], data["volumes"][-periods:]
+    total_vol = sum(v_s)
+    if total_vol == 0:
+        return sum(c_s) / periods
+    typical = [(h + l + c) / 3.0 for h, l, c in zip(h_s, l_s, c_s)]
+    return sum(tp * v for tp, v in zip(typical, v_s)) / total_vol
+
+
+def get_atr(data: dict, periods: int = ATR_PERIOD) -> float:
+    if not data or len(data["closes"]) < periods + 1:
+        return 0.0
+    highs, lows, closes = data["highs"], data["lows"], data["closes"]
+    tr_list = [
+        max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+        for i in range(-periods, 0)
+    ]
+    return sum(tr_list) / len(tr_list)
+
+
+def get_trend(data: dict) -> str:
+    if not data or len(data["closes"]) < 50:
+        return "range"
+    closes = data["closes"]
+    sma20 = sum(closes[-20:]) / 20
+    sma50 = sum(closes[-50:]) / 50
+    if sma20 < sma50 * 0.997:
+        return "down"
+    if sma20 > sma50 * 1.003:
+        return "up"
+    return "range"
+
+
+def get_bb(data: dict, periods: int = BB_PERIOD, num_std: float = BB_STD):
+    if not data or len(data["closes"]) < periods:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    closes = data["closes"][-periods:]
+    volumes = data["volumes"][-periods:]
+    ma = sum(closes) / periods
+    std = (sum((x - ma) ** 2 for x in closes) / periods) ** 0.5
+    return ma + num_std * std, ma, ma - num_std * std, sum(volumes) / periods, volumes[-1]
+
+
+def is_volatility_expanding(closed_data: dict, atr: float, periods: int = BB_PERIOD) -> bool:
+    """
+    Фильтр анти-импульса по закрытым свечам: возвращает True, если ширина полос Боллинджера
+    резко расширилась относительно последних 10 закрытых свечей или последняя закрытая свеча > 2.2 * ATR.
+    """
+    if not closed_data or len(closed_data["closes"]) < periods + 10 or atr <= 0:
+        return False
+
+    closes = closed_data["closes"]
+    stds = []
+    for offset in range(-10, 0):
+        end_idx = len(closes) + offset + 1
+        window = closes[end_idx - periods : end_idx]
+        ma = sum(window) / periods
+        std = (sum((x - ma) ** 2 for x in window) / periods) ** 0.5
+        stds.append(std)
+
+    avg_std = sum(stds) / len(stds)
+    cur_std = stds[-1]
+    bb_expanding = (avg_std > 0) and (cur_std > avg_std * BB_EXPANSION_MAX)
+
+    last_closed_range = closed_data["highs"][-1] - closed_data["lows"][-1]
+    impulse_candle = last_closed_range > atr * IMPULSE_BAR_ATR_MAX
+
+    return bb_expanding or impulse_candle
+
+
+def calc_net_pnl(side: str, entry: float, exit_price: float, volume: float, exit_fee_pct: float) -> float:
+    gross = (exit_price - entry) * volume if side == "buy" else (entry - exit_price) * volume
+    fees = (entry * volume * FEE_MAKER) + (exit_price * volume * exit_fee_pct)
+    return gross - fees
+
+
+def finalize_trade_close(stats: dict, pos: dict, exit_price: float, exit_fee: float, is_stop: bool) -> float:
+    final_pnl = calc_net_pnl(pos["side"], pos["entry"], exit_price, pos["volume"], exit_fee)
+    now_ts = time.time()
+
+    stats["paper_balance"] += final_pnl
+    stats["total_trades"] += 1
+    stats["total_wins"] += 1 if final_pnl > 0 else 0
+    stats["total_pnl"] += final_pnl
+    stats["daily_pnl"] = stats.get("daily_pnl", 0.0) + final_pnl
+    stats["last_exit_price"] = float(exit_price)
+    stats["last_exit_time"] = now_ts
+    stats["open_position"] = None
+
+    if is_stop:
+        stats["last_stop_time"] = now_ts
+        stats["daily_stop_streak"] = stats.get("daily_stop_streak", 0) + 1
+        stats["consecutive_stops"] = stats.get("consecutive_stops", 0) + 1
+    elif final_pnl > 0:
+        stats["daily_stop_streak"] = 0
+        stats["consecutive_stops"] = 0
+
+    save_state(stats)
+    logging.info(
+        f"[CLOSE] side={pos['side']} exit={exit_price:.2f} net_pnl={final_pnl:+.2f} "
+        f"is_stop={is_stop} daily_streak={stats['daily_stop_streak']} total_streak={stats['consecutive_stops']}"
+    )
+    return final_pnl
+
+
+# --- TELEGRAM COMMANDS ---
+async def stats_command(update: Update, context):
+    try:
+        stats = load_state()
+        wr = (stats["total_wins"] / stats["total_trades"] * 100) if stats["total_trades"] else 0.0
+        ohlc = get_ohlc(KRAKEN_SYMBOL, TIMEFRAME)
+        regime = get_trend(ohlc) if ohlc else "unknown"
+        roi = ((stats["paper_balance"] - PAPER_BALANCE_START) / PAPER_BALANCE_START * 100) if PAPER_BALANCE_START > 0 else 0.0
+
+        deriv = get_derivatives_data()
+        funding_str = f"{deriv['funding_rate_pct']:+.4f}%" if deriv["status"] == "ok" else "N/A"
+        pending_str = "ACTIVE" if stats.get("pending_order") else "NONE"
+
+        msg = (
+            f"📊 *Stats {SYMBOL} {VERSION}*\n\n"
+            f"💰 *Balance:* `${stats['paper_balance']:.2f}`\n"
+            f"📈 *Total Trades:* `{stats['total_trades']}` | *WR:* `{wr:.1f}%`\n"
+            f"💵 *Total PnL:* `${stats['total_pnl']:.2f}` (`{roi:+.2f}%`)\n"
+            f"📅 *Today PnL:* `${stats.get('daily_pnl', 0.0):+.2f}` | *Trades:* `{stats.get('daily_trades', 0)}/{MAX_TRADES_PER_DAY}`\n"
+            f"🛡️ *Stops (Day / Streak):* `{stats.get('daily_stop_streak', 0)}/{MAX_CONSECUTIVE_STOPS}` | "
+            f"`{stats.get('consecutive_stops', 0)}/{MAX_CROSS_DAY_STOPS}`\n"
+            f"⚙️ *ATR Mult:* `{ATR_MULTIPLIER}x` | *BB Std:* `{BB_STD}` | *TP:* `{TAKE_PROFIT_PCT*100:.1f}%`\n"
+            f"🚫 *Blocked Imp:* `{stats.get('blocked_impulse_signals', 0)}` | *TTL missed:* `{stats.get('missed_limit_orders', 0)}`\n"
+            f"⏳ *Pending Limit:* `{pending_str}` | *Regime:* `{regime}` | *Funding:* `{funding_str}`"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"[ERROR] /stats: {e}", exc_info=True)
+
+
+async def pos_command(update: Update, context):
+    try:
+        stats = load_state()
+        pending = stats.get("pending_order")
+        if pending:
+            rem_sec = max(0, int(pending["expires_at"] - time.time()))
+            msg = (
+                f"⏳ *PENDING LIMIT ORDER ({pending['side'].upper()})*\n"
+                f"Limit Price: `${pending['limit_price']:.2f}` | Vol: `{pending['volume']:.4f} BTC`\n"
+                f"SL: `${pending['sl']:.2f}` | TP: `${pending['tp']:.2f}`\n"
+                f"Auto-cancel in: `{rem_sec}s`"
+            )
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            return
+
+        pos = stats.get("open_position")
+        if not pos:
+            await update.message.reply_text("❌ No open position or pending order")
+            return
+
+        ticker = get_ticker()
+        if not ticker:
+            await update.message.reply_text("❌ Error fetching price from Kraken API")
+            return
+
+        current_price = ticker["bid"] if pos["side"] == "buy" else ticker["ask"]
+        current_pnl = calc_net_pnl(pos["side"], pos["entry"], current_price, pos["volume"], FEE_MAKER)
+
+        if pos["side"] == "buy":
+            pnl_pct = ((current_price - pos["entry"]) / pos["entry"]) * 100
+            dist_sl = ((pos["entry"] - pos["sl"]) / pos["entry"]) * 100
+            dist_tp = ((pos["tp"] - pos["entry"]) / pos["entry"]) * 100
+            side_emoji, side_text = "🟢", "LONG"
+        else:
+            pnl_pct = ((pos["entry"] - current_price) / pos["entry"]) * 100
+            dist_sl = ((pos["sl"] - pos["entry"]) / pos["entry"]) * 100
+            dist_tp = ((pos["entry"] - pos["tp"]) / pos["entry"]) * 100
+            side_emoji, side_text = "🔴", "SHORT"
+
+        pnl_emoji = "📈" if current_pnl > 0 else "📉"
+        msg = (
+            f"{side_emoji} *Position {side_text}*\n\n"
+            f"💵 *Entry (Maker):* `${pos['entry']:.2f}` | *Current:* `${current_price:.2f}`\n"
+            f"📊 *Volume:* `{pos['volume']:.4f} BTC`\n"
+            f"{pnl_emoji} *Net PnL:* `${current_pnl:.2f}` (`{pnl_pct:+.2f}%`)\n"
+            f"🛑 *SL (Taker):* `${pos['sl']:.2f}` (`-{dist_sl:.2f}%`) | 🎯 *TP (Maker):* `${pos['tp']:.2f}` (`+{dist_tp:.2f}%`)"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"[ERROR] /pos: {e}", exc_info=True)
+
+
+async def close_command(update: Update, context):
+    try:
+        stats = load_state()
+        if stats.get("pending_order"):
+            stats["pending_order"] = None
+            save_state(stats)
+            await update.message.reply_text("🗑️ *Pending limit order cancelled*", parse_mode="Markdown")
+            return
+
+        pos = stats.get("open_position")
+        if not pos:
+            await update.message.reply_text("❌ No open position")
+            return
+        ticker = get_ticker()
+        if not ticker:
+            await update.message.reply_text("❌ Error fetching price from Kraken API")
+            return
+        price = ticker["bid"] if pos["side"] == "buy" else ticker["ask"]
+        pnl = finalize_trade_close(stats, pos, exit_price=price, exit_fee=FEE_TAKER, is_stop=False)
+        msg = f"🔴 *MANUAL CLOSE*\nPrice: `${price:.2f}`\nNet PnL: `${pnl:.2f}`\nBalance: `${stats['paper_balance']:.2f}`"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"[ERROR] /close: {e}", exc_info=True)
+
+
+async def shutdown_command(update: Update, context):
+    try:
+        await update.message.reply_text("🛑 *Bot Shutdown Initiated*", parse_mode="Markdown")
+        global shutdown_event
+        if shutdown_event:
+            shutdown_event.set()
+    except Exception as e:
+        logging.error(f"[ERROR] /shutd: {e}", exc_info=True)
+
+
+# --- ОСНОВНОЙ ЦИКЛ ---
+def run_bot():
+    global shutdown_event
+    shutdown_event = asyncio.Event()
+
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("pos", pos_command))
+    app.add_handler(CommandHandler("close", close_command))
+    app.add_handler(CommandHandler("shutd", shutdown_command))
+
+    async def trading_loop():
+        async with app:
+            await app.initialize()
+            await app.start()
+            logging.info("Bot updater polling started ✓")
+            await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+            send_telegram(
+                f"🚀 *Bot started {VERSION}* | `{SYMBOL}` (`{TIMEFRAME}m`)\n"
+                f"ATR: `{ATR_MULTIPLIER}x` | Anti-Impulse: `BB_EXP<={BB_EXPANSION_MAX}x` | "
+                f"`CrossDayCB={MAX_CROSS_DAY_STOPS} ({CROSS_DAY_CB_HOURS}h)`"
+            )
+
+            try:
+                while not shutdown_event.is_set():
+                    try:
+                        stats = load_state()
+                        now_ts = time.time()
+
+                        # 1. СБРОС ДНЕВНЫХ СЧЁТЧИКОВ ПРИ СМЕНЕ КАЛЕНДАРНОГО ДНЯ
+                        today = str(date.today())
+                        if stats.get("last_day") != today:
+                            stats["last_day"] = today
+                            stats["daily_trades"] = 0
+                            stats["daily_pnl"] = 0.0
+                            stats["daily_stop_streak"] = 0
+                            save_state(stats)
+
+                        # 2. ОБРАБОТКА АКТИВНОГО ЛИМИТНОГО ОРДЕРА (PENDING ORDER + TTL)
+                        if stats.get("pending_order"):
+                            pending = stats["pending_order"]
+                            if now_ts >= pending["expires_at"]:
+                                stats["pending_order"] = None
+                                stats["missed_limit_orders"] = stats.get("missed_limit_orders", 0) + 1
+                                save_state(stats)
+                                logging.info(f"LIMIT EXPIRED: cancelled unfilled {pending['side']} @ {pending['limit_price']:.2f}")
+                                send_telegram(
+                                    f"⌛ *LIMIT ORDER CANCELLED (TTL)*\n"
+                                    f"Side: `{pending['side'].upper()}` | Price: `${pending['limit_price']:.2f}`"
+                                )
+                                await asyncio.sleep(10)
+                                continue
+
+                            ticker = get_ticker()
+                            if ticker:
+                                filled = (
+                                    (pending["side"] == "buy" and ticker["ask"] <= pending["limit_price"])
+                                    or (pending["side"] == "sell" and ticker["bid"] >= pending["limit_price"])
+                                )
+                                if filled:
+                                    stats["open_position"] = {
+                                        "side": pending["side"],
+                                        "entry": pending["limit_price"],
+                                        "volume": pending["volume"],
+                                        "sl": pending["sl"],
+                                        "tp": pending["tp"],
+                                        "checked_candle_time": 0,
+                                    }
+                                    stats["pending_order"] = None
+                                    stats["daily_trades"] = stats.get("daily_trades", 0) + 1
+                                    save_state(stats)
+                                    badge = "🟢" if pending["side"] == "buy" else "🔴"
+                                    send_telegram(
+                                        f"{badge} *LIMIT FILLED ({pending['side'].upper()})*\n"
+                                        f"Entry (Maker 0.16%): `${pending['limit_price']:.2f}` | Vol: `{pending['volume']:.4f} BTC`\n"
+                                        f"SL: `${pending['sl']:.2f}` | TP: `${pending['tp']:.2f}`"
+                                    )
+                                    logging.info(f"[FILL] Limit {pending['side']} filled @ {pending['limit_price']:.2f}")
+                                    continue
+
+                            await asyncio.sleep(10)
+                            continue
+
+                        # 3. ПРОВЕРКА ОТКРЫТОЙ ПОЗИЦИИ ПО ЗАКРЫТИЮ СВЕЧИ
+                        if stats.get("open_position"):
+                            pos = stats["open_position"]
+                            ohlc = get_ohlc(KRAKEN_SYMBOL, TIMEFRAME, limit=2)
+                            if not ohlc or len(ohlc["times"]) < 2:
+                                await asyncio.sleep(5)
+                                continue
+
+                            last_closed_time = ohlc["times"][-2]
+                            if pos.get("checked_candle_time") != last_closed_time:
+                                pos["checked_candle_time"] = last_closed_time
+                                prev_high = ohlc["highs"][-2]
+                                prev_low = ohlc["lows"][-2]
+
+                                exit_triggered = False
+                                exit_reason = ""
+                                exit_price = 0.0
+                                is_stop = False
+
+                                if pos["side"] == "buy":
+                                    if prev_low <= pos["sl"]:
+                                        exit_triggered, exit_reason, exit_price, is_stop = True, "SL CLOSE (LONG)", pos["sl"], True
+                                    elif prev_high >= pos["tp"]:
+                                        exit_triggered, exit_reason, exit_price = True, "TP CLOSE (LONG)", pos["tp"]
+                                elif pos["side"] == "sell":
+                                    if prev_high >= pos["sl"]:
+                                        exit_triggered,
