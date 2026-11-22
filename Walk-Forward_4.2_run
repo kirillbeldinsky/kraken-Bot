@@ -1,0 +1,370 @@
+import os
+import time
+import numpy as np
+import pandas as pd
+import requests
+
+CSV_FILE = "candles_30d.csv"
+
+# --- ПАРАМЕТРЫ v7.4.2-ANTI-IMPULSE ---
+BB_PERIOD = 20
+ATR_PERIOD = 14
+TAKE_PROFIT_PCT = 0.015
+RISK_PCT = 0.01
+MAX_LEVERAGE = 1.0
+MIN_ATR_PCT = 0.00045
+
+FEE_MAKER = 0.0016
+FEE_TAKER = 0.0026
+
+COOLDOWN_BARS = 16              # 4 часа на 15m
+MAX_TRADES_PER_DAY = 3
+MAX_CONSECUTIVE_STOPS = 2
+MAX_CROSS_DAY_STOPS = 3
+MAX_DAILY_LOSS_PCT = 0.02
+
+BB_EXPANSION_MAX = 1.35
+IMPULSE_BAR_ATR_MAX = 2.2
+
+
+def fetch_binance_15m_30d() -> pd.DataFrame:
+    """Загружает 2880 свечей 15m (30 дней) с резервного публичного эндпоинта."""
+    endpoints = [
+        "https://api.binance.us/api/v3/klines",
+        "https://api.binance.com/api/v3/klines",
+    ]
+    target_bars = 2880
+    all_rows = []
+    end_ms = int(time.time() * 1000)
+
+    for url in endpoints:
+        rows = []
+        cur_end = end_ms
+        ok = True
+        for _ in range(4):
+            params = {
+                "symbol": "BTCUSDT",
+                "interval": "15m",
+                "limit": 1000,
+                "endTime": cur_end,
+            }
+            try:
+                resp = requests.get(url, params=params, timeout=10)
+                resp.raise_for_status()
+                batch = resp.json()
+                if not isinstance(batch, list) or not batch:
+                    ok = False
+                    break
+                rows = batch + rows
+                cur_end = int(batch[0][0]) - 1
+                if len(rows) >= target_bars:
+                    break
+            except Exception:
+                ok = False
+                break
+        if ok and len(rows) >= 500:
+            all_rows = rows[-target_bars:]
+            break
+
+    if not all_rows:
+        raise RuntimeError("Не удалось загрузить исторические свечи OHLCV.")
+
+    df = pd.DataFrame(
+        {
+            "timestamp": [int(r[0]) // 1000 for r in all_rows],
+            "open": [float(r[1]) for r in all_rows],
+            "high": [float(r[2]) for r in all_rows],
+            "low": [float(r[3]) for r in all_rows],
+            "close": [float(r[4]) for r in all_rows],
+            "volume": [float(r[5]) for r in all_rows],
+        }
+    )
+    df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    return df
+
+
+def load_or_prepare_dataset(csv_path: str = CSV_FILE) -> pd.DataFrame:
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path)
+    else:
+        df = fetch_binance_15m_30d()
+        df.to_csv(csv_path, index=False)
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close", "volume"]).reset_index(drop=True)
+    df = df[(df["close"] > 0) & (df["volume"] >= 0)].reset_index(drop=True)
+    df["day"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.strftime("%Y-%m-%d")
+    return df
+
+
+def prepare_features(df: pd.DataFrame, bb_std: float) -> pd.DataFrame:
+    """Считает индикаторы строго по прошлым данным без lookahead bias."""
+    out = df.copy()
+    c = out["close"]
+    h = out["high"]
+    l = out["low"]
+    v = out["volume"]
+
+    ma20 = c.rolling(BB_PERIOD, min_periods=BB_PERIOD).mean()
+    std20 = c.rolling(BB_PERIOD, min_periods=BB_PERIOD).std(ddof=0)
+    out["upper"] = ma20 + bb_std * std20
+    out["lower"] = ma20 - bb_std * std20
+    out["avg_vol"] = v.rolling(BB_PERIOD, min_periods=BB_PERIOD).mean()
+
+    sma20 = c.rolling(20, min_periods=20).mean()
+    sma50 = c.rolling(50, min_periods=50).mean()
+    out["trend"] = np.where(
+        sma20 < sma50 * 0.997,
+        "down",
+        np.where(sma20 > sma50 * 1.003, "up", "range"),
+    )
+
+    tp = (h + l + c) / 3.0
+    pv_sum = (tp * v).rolling(20, min_periods=20).sum()
+    v_sum = v.rolling(20, min_periods=20).sum()
+    out["vwap"] = np.where(v_sum > 0, pv_sum / v_sum, ma20)
+
+    prev_c = c.shift(1)
+    tr = pd.concat(
+        [
+            h - l,
+            (h - prev_c).abs(),
+            (l - prev_c).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    out["atr"] = tr.rolling(ATR_PERIOD, min_periods=ATR_PERIOD).mean()
+
+    avg_std10 = std20.rolling(10, min_periods=10).mean()
+    bb_exp = (avg_std10 > 0) & (std20 > avg_std10 * BB_EXPANSION_MAX)
+    bar_range = h - l
+    impulse_bar = bar_range > (out["atr"] * IMPULSE_BAR_ATR_MAX)
+    out["vol_expanding"] = (bb_exp | impulse_bar).fillna(False)
+
+    return out
+
+
+def simulate_window(
+    feat_df: pd.DataFrame,
+    start_idx: int,
+    end_idx: int,
+    atr_mult: float,
+    start_balance: float = 1000.0,
+) -> dict:
+    """Симулирует v7.4.2-ANTI-IMPULSE на срезе [start_idx:end_idx)."""
+    balance = float(start_balance)
+    open_pos = None
+    last_stop_bar = -999999
+    consecutive_stops = 0
+    cur_day = None
+    daily_trades = 0
+    daily_pnl = 0.0
+    daily_stop_streak = 0
+
+    trades = 0
+    wins = 0
+    blocked_impulse = 0
+    equity_curve = [balance]
+
+    for i in range(max(55, start_idx), min(len(feat_df) - 1, end_idx)):
+        row = feat_df.iloc[i]
+        nxt = feat_df.iloc[i + 1]
+        day = row["day"]
+
+        if day != cur_day:
+            cur_day = day
+            daily_trades = 0
+            daily_pnl = 0.0
+            daily_stop_streak = 0
+
+        # 1. Проверка выхода по закрытой свече row
+        if open_pos is not None:
+            exit_price = None
+            is_stop = False
+            if open_pos["side"] == "buy":
+                if row["low"] <= open_pos["sl"]:
+                    exit_price, is_stop = open_pos["sl"], True
+                elif row["high"] >= open_pos["tp"]:
+                    exit_price, is_stop = open_pos["tp"], False
+            else:
+                if row["high"] >= open_pos["sl"]:
+                    exit_price, is_stop = open_pos["sl"], True
+                elif row["low"] <= open_pos["tp"]:
+                    exit_price, is_stop = open_pos["tp"], False
+
+            if exit_price is not None:
+                qty = open_pos["volume"]
+                entry_p = open_pos["entry"]
+                gross = (exit_price - entry_p) * qty if open_pos["side"] == "buy" else (entry_p - exit_price) * qty
+                exit_fee_rate = FEE_TAKER if is_stop else FEE_MAKER
+                net_pnl = gross - (entry_p * qty * FEE_MAKER + exit_price * qty * exit_fee_rate)
+
+                balance += net_pnl
+                daily_pnl += net_pnl
+                trades += 1
+                if net_pnl > 0:
+                    wins += 1
+                    daily_stop_streak = 0
+                    consecutive_stops = 0
+                if is_stop:
+                    last_stop_bar = i
+                    daily_stop_streak += 1
+                    consecutive_stops += 1
+
+                open_pos = None
+                equity_curve.append(balance)
+            continue
+
+        # 2. Предохранители и лимиты
+        if consecutive_stops >= MAX_CROSS_DAY_STOPS and (i - last_stop_bar) < 48:
+            continue
+        if daily_stop_streak >= MAX_CONSECUTIVE_STOPS:
+            continue
+        if daily_pnl <= -(balance * MAX_DAILY_LOSS_PCT):
+            continue
+        if daily_trades >= MAX_TRADES_PER_DAY:
+            continue
+        if (i - last_stop_bar) < COOLDOWN_BARS:
+            continue
+
+        # 3. Сигнал по закрытой свече row
+        close_p = float(row["close"])
+        atr_val = float(row["atr"])
+        lower_val = float(row["lower"])
+        upper_val = float(row["upper"])
+        vwap_val = float(row["vwap"])
+        avg_vol = float(row["avg_vol"])
+        last_vol = float(row["volume"])
+        trend = str(row["trend"])
+        vol_exp = bool(row["vol_expanding"])
+
+        if np.isnan(atr_val) or np.isnan(lower_val) or np.isnan(vwap_val) or atr_val <= 0:
+            continue
+        if last_vol < avg_vol * 0.55 or (atr_val / close_p) < MIN_ATR_PCT:
+            continue
+
+        vol_spike = last_vol > avg_vol
+        bb_long = (close_p <= lower_val) and not (trend == "range" and close_p < lower_val * 0.996)
+        bb_short = (close_p >= upper_val) and not (trend == "range" and close_p > upper_val * 1.004)
+        vwap_long = close_p > vwap_val and vol_spike and trend == "up" and close_p < upper_val
+        vwap_short = close_p < vwap_val and vol_spike and trend == "down" and close_p > lower_val
+
+        if vol_exp and (bb_long or bb_short) and not (vwap_long or vwap_short):
+            blocked_impulse += 1
+            continue
+
+        long_sig = (bb_long and not vol_exp) or vwap_long
+        short_sig = (bb_short and not vol_exp) or vwap_short
+
+        # 4. Вход на открытии следующего бара nxt
+        entry_p = float(nxt["open"])
+        sl_dist = atr_val * atr_mult
+        if sl_dist <= 0 or entry_p <= sl_dist:
+            continue
+
+        qty = min((balance * RISK_PCT) / sl_dist, (balance * MAX_LEVERAGE) / entry_p)
+        if qty <= 0:
+            continue
+
+        if long_sig and trend != "down":
+            open_pos = {
+                "side": "buy",
+                "entry": entry_p,
+                "volume": qty,
+                "sl": entry_p - sl_dist,
+                "tp": entry_p * (1.0 + TAKE_PROFIT_PCT),
+            }
+            daily_trades += 1
+        elif short_sig and trend != "up":
+            open_pos = {
+                "side": "sell",
+                "entry": entry_p,
+                "volume": qty,
+                "sl": entry_p + sl_dist,
+                "tp": entry_p * (1.0 - TAKE_PROFIT_PCT),
+            }
+            daily_trades += 1
+
+    eq = pd.Series(equity_curve, dtype=float)
+    dd_pct = float(((eq - eq.cummax()) / eq.cummax()).min() * 100.0) if len(eq) else 0.0
+    ret_pct = ((balance - start_balance) / start_balance) * 100.0
+    wr_pct = (wins / trades * 100.0) if trades > 0 else 0.0
+
+    return {
+        "ret_pct": ret_pct,
+        "dd_pct": dd_pct,
+        "trades": trades,
+        "wins": wins,
+        "wr_pct": wr_pct,
+        "blocked": blocked_impulse,
+        "end_balance": balance,
+    }
+
+
+def run_walk_forward(
+    df: pd.DataFrame,
+    train_bars: int = 960,
+    test_bars: int = 480,
+) -> pd.DataFrame:
+    bb_grid = [2.0, 2.2]
+    atr_grid = [1.2, 1.5, 1.8]
+    rows = []
+    running_balance = 1000.0
+
+    step = 0
+    for test_start in range(train_bars, len(df) - test_bars + 1, test_bars):
+        step += 1
+        train_start = max(0, test_start - train_bars)
+        test_end = test_start + test_bars
+
+        best_cfg = (2.2, 1.5)
+        best_train_ret = -np.inf
+
+        for b_std in bb_grid:
+            feat = prepare_features(df.iloc[train_start:test_start].reset_index(drop=True), b_std)
+            for a_mult in atr_grid:
+                res_tr = simulate_window(feat, 0, len(feat), atr_mult=a_mult, start_balance=1000.0)
+                if res_tr["ret_pct"] > best_train_ret:
+                    best_train_ret = res_tr["ret_pct"]
+                    best_cfg = (b_std, a_mult)
+
+        b_std, a_mult = best_cfg
+        # Включаем прогрев индикаторов перед test_start без утечки данных
+        warmup_start = max(0, test_start - 80)
+        feat_oos = prepare_features(df.iloc[warmup_start:test_end].reset_index(drop=True), b_std)
+        oos_offset = test_start - warmup_start
+
+        res_oos = simulate_window(
+            feat_oos,
+            start_idx=oos_offset,
+            end_idx=len(feat_oos),
+            atr_mult=a_mult,
+            start_balance=running_balance,
+        )
+        running_balance = res_oos["end_balance"]
+
+        rows.append(
+            {
+                "window": step,
+                "bb_std": b_std,
+                "atr_mult": a_mult,
+                "train_ret_%": round(best_train_ret, 2),
+                "oos_ret_%": round(res_oos["ret_pct"], 2),
+                "oos_dd_%": round(res_oos["dd_pct"], 2),
+                "oos_trades": res_oos["trades"],
+                "oos_wr_%": round(res_oos["wr_pct"], 1),
+                "blocked_imp": res_oos["blocked"],
+                "balance_$": round(running_balance, 2),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+if __name__ == "__main__":
+    dataset = load_or_prepare_dataset()
+    report = run_walk_forward(dataset)
+    print(f"Loaded candles: {len(dataset)}")
+    print("\n=== WALK-FORWARD v7.4.2-ANTI-IMPULSE REPORT ===")
+    print(report.to_string(index=False))
