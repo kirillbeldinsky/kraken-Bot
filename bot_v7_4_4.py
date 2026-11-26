@@ -737,8 +737,17 @@ async def trading_loop() -> None:
         except asyncio.CancelledError:
             logging.info("Trading loop cancelled")
         finally:
-            await app.updater.stop_polling()
-            await app.stop()
+            try:
+                if app.updater.running:
+                    await app.updater.stop_polling()
+                    await app.updater.stop()
+            except Exception as e:
+                logging.warning(f"Updater stop warning: {e}")
+            try:
+                if app.running:
+                    await app.stop()
+            except Exception as e:
+                logging.warning(f"Application stop warning: {e}")
             logging.info("Bot stopped cleanly ✓")
 
 
